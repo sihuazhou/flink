@@ -270,16 +270,17 @@ public class SlotSharingGroupAssignment {
 	 *
 	 * @return A slot to execute the given ExecutionVertex in, or null, if none is available.
 	 */
-	public SimpleSlot getSlotForTask(ExecutionVertex vertex) {
-		return getSlotForTask(vertex.getJobvertexId(), vertex.getPreferredLocationsBasedOnInputs());
+	public SimpleSlot getSlotForTask(ExecutionVertex vertex, boolean onlyAllocateBasePreferInputs) {
+		return getSlotForTask(vertex.getJobvertexId(), vertex.getPreferredLocationsBasedOnInputs(), onlyAllocateBasePreferInputs);
 	}
 
 	/**
 	 * 
 	 */
-	SimpleSlot getSlotForTask(JobVertexID vertexID, Iterable<TaskManagerLocation> locationPreferences) {
+	SimpleSlot getSlotForTask(JobVertexID vertexID, Iterable<TaskManagerLocation> locationPreferences, boolean localOnly) {
 		synchronized (lock) {
-			Tuple2<SharedSlot, Locality> p = getSlotForTaskInternal(vertexID, locationPreferences, false);
+
+			Tuple2<SharedSlot, Locality> p = getSlotForTaskInternal(vertexID, locationPreferences, localOnly);
 
 			if (p != null) {
 				SharedSlot ss = p.f0;
@@ -312,11 +313,14 @@ public class SlotSharingGroupAssignment {
 	 * @return A simple slot allocate within a suitable shared slot, or {@code null}, if no suitable
 	 *         shared slot is available.
 	 */
-	public SimpleSlot getSlotForTask(ExecutionVertex vertex, CoLocationConstraint constraint) {
-		return getSlotForTask(constraint, vertex.getPreferredLocationsBasedOnInputs());
+	public SimpleSlot getSlotForTask(ExecutionVertex vertex, CoLocationConstraint constraint, boolean isOnlyAllocateByPreferInputs) {
+		return getSlotForTask(constraint, vertex.getPreferredLocationsBasedOnInputs(), isOnlyAllocateByPreferInputs);
 	}
 	
-	SimpleSlot getSlotForTask(CoLocationConstraint constraint, Iterable<TaskManagerLocation> locationPreferences) {
+	SimpleSlot getSlotForTask(CoLocationConstraint constraint,
+							  Iterable<TaskManagerLocation> locationPreferences,
+							  boolean isOnlyAllocateByPreferInputs
+							  ) {
 		synchronized (lock) {
 			if (constraint.isAssignedAndAlive()) {
 				// the shared slot of the co-location group is initialized and set we allocate a sub-slot
@@ -365,7 +369,7 @@ public class SlotSharingGroupAssignment {
 				// grab a new slot and initialize the constraint with that one.
 				// preferred locations are defined by the vertex
 				Tuple2<SharedSlot, Locality> p =
-						getSlotForTaskInternal(constraint.getGroupId(), locationPreferences, false);
+						getSlotForTaskInternal(constraint.getGroupId(), locationPreferences, isOnlyAllocateByPreferInputs);
 				if (p == null) {
 					// could not get a shared slot for this co-location-group
 					return null;
@@ -435,7 +439,7 @@ public class SlotSharingGroupAssignment {
 		}
 
 		// if we want only local assignments, exit now with a "not found" result
-		if (didNotGetPreferred && localOnly) {
+		if (localOnly) {
 			return null;
 		}
 

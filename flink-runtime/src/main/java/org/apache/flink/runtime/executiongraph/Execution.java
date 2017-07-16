@@ -133,6 +133,8 @@ public class Execution implements AccessExecution, Archiveable<ArchivedExecution
 
 	private volatile ExecutionState state = CREATED;
 
+	private volatile Future<SimpleSlot> assignedFutureResource;
+
 	private volatile SimpleSlot assignedResource;     // once assigned, never changes until the execution is archived
 
 	private volatile Throwable failureCause;          // once assigned, never changes
@@ -229,6 +231,10 @@ public class Execution implements AccessExecution, Archiveable<ArchivedExecution
 		return assignedResource;
 	}
 
+	public Future<SimpleSlot> getAssignedFutureResource() {
+		return assignedFutureResource;
+	}
+
 	@Override
 	public TaskManagerLocation getAssignedResourceLocation() {
 		// returns non-null only when a location is already assigned
@@ -306,7 +312,7 @@ public class Execution implements AccessExecution, Archiveable<ArchivedExecution
 	 */
 	public boolean scheduleForExecution(SlotProvider slotProvider, boolean queued) {
 		try {
-			final Future<SimpleSlot> slotAllocationFuture = allocateSlotForExecution(slotProvider, queued);
+			final Future<SimpleSlot> slotAllocationFuture = allocateSlotForExecution(slotProvider, queued, false);
 
 			// IMPORTANT: We have to use the synchronous handle operation (direct executor) here so
 			// that we directly deploy the tasks if the slot allocation future is completed. This is
@@ -344,7 +350,7 @@ public class Execution implements AccessExecution, Archiveable<ArchivedExecution
 		}
 	}
 
-	public Future<SimpleSlot> allocateSlotForExecution(SlotProvider slotProvider, boolean queued) 
+	public Future<SimpleSlot> allocateSlotForExecution(SlotProvider slotProvider, boolean queued, boolean onlyAllocateBasePreferLocation)
 			throws IllegalExecutionStateException {
 
 		checkNotNull(slotProvider);
@@ -365,7 +371,13 @@ public class Execution implements AccessExecution, Archiveable<ArchivedExecution
 					new ScheduledUnit(this, sharingGroup) :
 					new ScheduledUnit(this, sharingGroup, locationConstraint);
 
-			return slotProvider.allocateSlot(toSchedule, queued);
+			toSchedule.setOnlyAllocateBasePreferInputs(onlyAllocateBasePreferLocation);
+
+			assignedFutureResource = slotProvider.allocateSlot(toSchedule, queued);
+			if (assignedFutureResource == null) {
+				transitionState(SCHEDULED, CREATED);
+			}
+			return assignedFutureResource;
 		}
 		else {
 			// call race, already deployed, or already done

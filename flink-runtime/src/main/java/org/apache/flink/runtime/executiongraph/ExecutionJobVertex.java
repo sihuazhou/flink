@@ -451,18 +451,9 @@ public class ExecutionJobVertex implements AccessExecutionJobVertex, Archiveable
 		}
 	}
 
-	/**
-	 * Acquires a slot for all the execution vertices of this ExecutionJobVertex. The method returns
-	 * pairs of the slots and execution attempts, to ease correlation between vertices and execution
-	 * attempts.
-	 * 
-	 * <p>If this method throws an exception, it makes sure to release all so far requested slots.
-	 * 
-	 * @param resourceProvider The resource provider from whom the slots are requested.
-	 */
-	public ExecutionAndSlot[] allocateResourcesForAll(SlotProvider resourceProvider, boolean queued) {
+	private List<ExecutionAndSlot> allocateResourcesForAllHelper(SlotProvider resourceProvider, boolean queued, boolean onlyAllocateBasePreferInputs) {
 		final ExecutionVertex[] vertices = this.taskVertices;
-		final ExecutionAndSlot[] slots = new ExecutionAndSlot[vertices.length];
+		final List<ExecutionAndSlot> slots = new ArrayList<>(taskVertices.length);
 
 		// try to acquire a slot future for each execution.
 		// we store the execution with the future just to be on the safe side
@@ -475,15 +466,25 @@ public class ExecutionJobVertex implements AccessExecutionJobVertex, Archiveable
 			try {
 				// allocate the next slot (future)
 				final Execution exec = vertices[i].getCurrentExecutionAttempt();
-				final Future<SimpleSlot> future = exec.allocateSlotForExecution(resourceProvider, queued);
-				slots[i] = new ExecutionAndSlot(exec, future);
+
+				if (exec.getAssignedFutureResource() != null) {
+					successful = true;
+					continue;
+				}
+
+				final Future<SimpleSlot> future = exec.allocateSlotForExecution(resourceProvider, queued, onlyAllocateBasePreferInputs);
+
+				if (future != null) {
+					slots.add(new ExecutionAndSlot(exec, future));
+				}
+
 				successful = true;
 			}
 			finally {
 				if (!successful) {
 					// this is the case if an exception was thrown
-					for (int k = 0; k < i; k++) {
-						ExecutionGraphUtils.releaseSlotFuture(slots[k].slotFuture);
+					for (ExecutionAndSlot slot: slots) {
+						ExecutionGraphUtils.releaseSlotFuture(slot.slotFuture);
 					}
 				}
 			}
@@ -491,6 +492,26 @@ public class ExecutionJobVertex implements AccessExecutionJobVertex, Archiveable
 
 		// all good, we acquired all slots
 		return slots;
+	}
+
+	/**
+	 * Acquires a slot for all the execution vertices of this ExecutionJobVertex. The method returns
+	 * pairs of the slots and execution attempts, to ease correlation between vertices and execution
+	 * attempts.
+	 * 
+	 * <p>If this method throws an exception, it makes sure to release all so far requested slots.
+	 * 
+	 * @param resourceProvider The resource provider from whom the slots are requested.
+	 */
+	public ExecutionAndSlot[] allocateResourcesForAll(SlotProvider resourceProvider, boolean queued) {
+		final List<ExecutionAndSlot> slots = new ArrayList<>(this.taskVertices.length);
+
+		//step 1
+		slots.addAll(allocateResourcesForAllHelper(resourceProvider, queued, true));
+		//step 2
+		slots.addAll(allocateResourcesForAllHelper(resourceProvider, queued, false));
+
+		return slots.toArray(new ExecutionAndSlot[this.taskVertices.length]);
 	}
 
 	/**

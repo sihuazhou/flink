@@ -144,7 +144,7 @@ public class SharedSlotsTest {
 			assertEquals(1, assignment.getNumberOfAvailableSlotsForGroup(vid3));
 			assertEquals(1, assignment.getNumberOfAvailableSlotsForGroup(vid4));
 			
-			SimpleSlot sub2 = assignment.getSlotForTask(vid2, NO_LOCATION);
+			SimpleSlot sub2 = assignment.getSlotForTask(vid2, NO_LOCATION, false);
 			assertNotNull(sub2);
 			
 			assertNull(sub2.getExecutedVertex());
@@ -163,7 +163,7 @@ public class SharedSlotsTest {
 			assertEquals(1, assignment.getNumberOfAvailableSlotsForGroup(vid3));
 			assertEquals(1, assignment.getNumberOfAvailableSlotsForGroup(vid4));
 			
-			SimpleSlot sub3 = assignment.getSlotForTask(vid3, Collections.singleton(instance.getTaskManagerLocation()));
+			SimpleSlot sub3 = assignment.getSlotForTask(vid3, Collections.singleton(instance.getTaskManagerLocation()), false);
 			assertNotNull(sub3);
 			
 			assertNull(sub3.getExecutedVertex());
@@ -183,7 +183,7 @@ public class SharedSlotsTest {
 			assertEquals(1, assignment.getNumberOfAvailableSlotsForGroup(vid4));
 
 			SimpleSlot sub4 = assignment.getSlotForTask(vid4,
-					Collections.singleton(SchedulerTestUtils.getRandomInstance(1).getTaskManagerLocation()));
+					Collections.singleton(SchedulerTestUtils.getRandomInstance(1).getTaskManagerLocation()), false);
 			assertNotNull(sub4);
 			
 			assertNull(sub4.getExecutedVertex());
@@ -250,8 +250,8 @@ public class SharedSlotsTest {
 			// allocate a series of sub slots
 
 			SimpleSlot sub1 = assignment.addSharedSlotAndAllocateSubSlot(sharedSlot, Locality.UNCONSTRAINED, vid1);
-			SimpleSlot sub2 = assignment.getSlotForTask(vid2, NO_LOCATION);
-			SimpleSlot sub3 = assignment.getSlotForTask(vid3, NO_LOCATION);
+			SimpleSlot sub2 = assignment.getSlotForTask(vid2, NO_LOCATION, false);
+			SimpleSlot sub3 = assignment.getSlotForTask(vid3, NO_LOCATION, false);
 			
 			assertNotNull(sub1);
 			assertNotNull(sub2);
@@ -335,7 +335,7 @@ public class SharedSlotsTest {
 			// allocate a series of sub slots
 
 			SimpleSlot sub1 = assignment.addSharedSlotAndAllocateSubSlot(sharedSlot, Locality.UNCONSTRAINED, vid1);
-			SimpleSlot sub2 = assignment.getSlotForTask(vid2, NO_LOCATION);
+			SimpleSlot sub2 = assignment.getSlotForTask(vid2, NO_LOCATION, false);
 
 			assertNotNull(sub1);
 			assertNotNull(sub2);
@@ -356,7 +356,7 @@ public class SharedSlotsTest {
 			assertEquals(1, assignment.getNumberOfSlots());
 			
 			
-			SimpleSlot sub3 = assignment.getSlotForTask(vid3, NO_LOCATION);
+			SimpleSlot sub3 = assignment.getSlotForTask(vid3, NO_LOCATION, false);
 			assertNotNull(sub3);
 			
 			assertEquals(2, sharedSlot.getNumberLeaves());
@@ -434,7 +434,7 @@ public class SharedSlotsTest {
 			assertEquals(1, sharedSlot.getNumberLeaves());
 			
 			// get the first slot in the nested shared slot from the co-location constraint
-			SimpleSlot headSlot = assignment.getSlotForTask(constraint, Collections.<TaskManagerLocation>emptySet());
+			SimpleSlot headSlot = assignment.getSlotForTask(constraint, Collections.<TaskManagerLocation>emptySet(), false);
 			assertEquals(2, sharedSlot.getNumberLeaves());
 
 			assertNotNull(constraint.getSharedSlot());
@@ -450,7 +450,7 @@ public class SharedSlotsTest {
 			assertFalse(constraint.isAssigned());
 			
 			// re-allocate the head slot
-			headSlot = assignment.getSlotForTask(constraint, Collections.<TaskManagerLocation>emptySet());
+			headSlot = assignment.getSlotForTask(constraint, Collections.<TaskManagerLocation>emptySet(), false);
 			
 			constraint.lockLocation();
 			assertNotNull(constraint.getSharedSlot());
@@ -458,12 +458,12 @@ public class SharedSlotsTest {
 			assertTrue(constraint.isAssignedAndAlive());
 			assertEquals(instance.getTaskManagerLocation(), constraint.getLocation());
 			
-			SimpleSlot tailSlot = assignment.getSlotForTask(constraint, Collections.<TaskManagerLocation>emptySet());
+			SimpleSlot tailSlot = assignment.getSlotForTask(constraint, Collections.<TaskManagerLocation>emptySet(), false);
 			
 			assertEquals(constraint.getSharedSlot(), headSlot.getParent());
 			assertEquals(constraint.getSharedSlot(), tailSlot.getParent());
 			
-			SimpleSlot sinkSlot = assignment.getSlotForTask(sinkId, Collections.<TaskManagerLocation>emptySet());
+			SimpleSlot sinkSlot = assignment.getSlotForTask(sinkId, Collections.<TaskManagerLocation>emptySet(), false);
 			assertEquals(4, sharedSlot.getNumberLeaves());
 			
 			// we release our co-location constraint tasks
@@ -481,8 +481,8 @@ public class SharedSlotsTest {
 			assertEquals(1, assignment.getNumberOfAvailableSlotsForGroup(constraint.getGroupId()));
 			
 			// re-allocate head and tail from the constraint
-			headSlot = assignment.getSlotForTask(constraint, NO_LOCATION);
-			tailSlot = assignment.getSlotForTask(constraint, NO_LOCATION);
+			headSlot = assignment.getSlotForTask(constraint, NO_LOCATION, false);
+			tailSlot = assignment.getSlotForTask(constraint, NO_LOCATION, false);
 			
 			assertEquals(4, sharedSlot.getNumberLeaves());
 			assertEquals(0, assignment.getNumberOfAvailableSlotsForGroup(constraint.getGroupId()));
@@ -567,11 +567,11 @@ public class SharedSlotsTest {
 			// get the first simple slot
 			SimpleSlot sourceSlot = assignment.addSharedSlotAndAllocateSubSlot(sharedSlot, Locality.LOCAL, sourceId);
 			
-			SimpleSlot headSlot = assignment.getSlotForTask(constraint, NO_LOCATION);
+			SimpleSlot headSlot = assignment.getSlotForTask(constraint, NO_LOCATION, false);
 			constraint.lockLocation();
-			SimpleSlot tailSlot = assignment.getSlotForTask(constraint, NO_LOCATION);
+			SimpleSlot tailSlot = assignment.getSlotForTask(constraint, NO_LOCATION, false);
 			
-			SimpleSlot sinkSlot = assignment.getSlotForTask(sinkId, NO_LOCATION);
+			SimpleSlot sinkSlot = assignment.getSlotForTask(sinkId, NO_LOCATION, false);
 			
 			assertEquals(4, sharedSlot.getNumberLeaves());
 
