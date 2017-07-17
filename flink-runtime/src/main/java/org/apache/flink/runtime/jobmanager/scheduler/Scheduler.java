@@ -146,6 +146,9 @@ public class Scheduler implements InstanceListener, SlotAvailabilityListener, Sl
 				Future<SimpleSlot> typed = (Future<SimpleSlot>) ret;
 				return typed;
 			}
+			else if (ret == null && task.getLocalOnly()) {
+				return null;
+			}
 			else {
 				// this should never happen, simply guard this case with an exception
 				throw new RuntimeException();
