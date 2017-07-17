@@ -270,8 +270,8 @@ public class SlotSharingGroupAssignment {
 	 *
 	 * @return A slot to execute the given ExecutionVertex in, or null, if none is available.
 	 */
-	public SimpleSlot getSlotForTask(ExecutionVertex vertex, boolean onlyAllocateBasePreferInputs) {
-		return getSlotForTask(vertex.getJobvertexId(), vertex.getPreferredLocationsBasedOnInputs(), onlyAllocateBasePreferInputs);
+	public SimpleSlot getSlotForTask(ExecutionVertex vertex, boolean localOnly) {
+		return getSlotForTask(vertex.getJobvertexId(), vertex.getPreferredLocationsBasedOnInputs(), localOnly);
 	}
 
 	/**
@@ -313,13 +313,13 @@ public class SlotSharingGroupAssignment {
 	 * @return A simple slot allocate within a suitable shared slot, or {@code null}, if no suitable
 	 *         shared slot is available.
 	 */
-	public SimpleSlot getSlotForTask(ExecutionVertex vertex, CoLocationConstraint constraint, boolean isOnlyAllocateByPreferInputs) {
-		return getSlotForTask(constraint, vertex.getPreferredLocationsBasedOnInputs(), isOnlyAllocateByPreferInputs);
+	public SimpleSlot getSlotForTask(ExecutionVertex vertex, CoLocationConstraint constraint, boolean localOnly) {
+		return getSlotForTask(constraint, vertex.getPreferredLocationsBasedOnInputs(), localOnly);
 	}
 	
 	SimpleSlot getSlotForTask(CoLocationConstraint constraint,
 							  Iterable<TaskManagerLocation> locationPreferences,
-							  boolean isOnlyAllocateByPreferInputs
+							  boolean localOnly
 							  ) {
 		synchronized (lock) {
 			if (constraint.isAssignedAndAlive()) {
@@ -369,7 +369,7 @@ public class SlotSharingGroupAssignment {
 				// grab a new slot and initialize the constraint with that one.
 				// preferred locations are defined by the vertex
 				Tuple2<SharedSlot, Locality> p =
-						getSlotForTaskInternal(constraint.getGroupId(), locationPreferences, isOnlyAllocateByPreferInputs);
+						getSlotForTaskInternal(constraint.getGroupId(), locationPreferences, localOnly);
 				if (p == null) {
 					// could not get a shared slot for this co-location-group
 					return null;
@@ -439,7 +439,7 @@ public class SlotSharingGroupAssignment {
 		}
 
 		// if we want only local assignments, exit now with a "not found" result
-		if (localOnly) {
+		if (didNotGetPreferred && localOnly) {
 			return null;
 		}
 

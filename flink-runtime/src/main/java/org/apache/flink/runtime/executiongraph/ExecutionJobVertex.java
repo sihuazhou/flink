@@ -451,7 +451,7 @@ public class ExecutionJobVertex implements AccessExecutionJobVertex, Archiveable
 		}
 	}
 
-	private List<ExecutionAndSlot> allocateResourcesForAllHelper(SlotProvider resourceProvider, boolean queued, boolean onlyAllocateBasePreferInputs) {
+	private List<ExecutionAndSlot> allocateResourcesForAllHelper(SlotProvider resourceProvider, boolean queued, boolean localOnly) {
 		final ExecutionVertex[] vertices = this.taskVertices;
 		final List<ExecutionAndSlot> slots = new ArrayList<>(taskVertices.length);
 
@@ -472,7 +472,7 @@ public class ExecutionJobVertex implements AccessExecutionJobVertex, Archiveable
 					continue;
 				}
 
-				final Future<SimpleSlot> future = exec.allocateSlotForExecution(resourceProvider, queued, onlyAllocateBasePreferInputs);
+				final Future<SimpleSlot> future = exec.allocateSlotForExecution(resourceProvider, queued, localOnly);
 
 				if (future != null) {
 					slots.add(new ExecutionAndSlot(exec, future));

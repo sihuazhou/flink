@@ -196,17 +196,17 @@ public class Scheduler implements InstanceListener, SlotAvailabilityListener, Sl
 				}
 				
 				// get a slot from the group, if the group has one for us (and can fulfill the constraint)
-				boolean isOnlyAllocateByPreferInputs = task.getOnlyAllocateBasePreferInputs();
+				boolean assignFromGroupLocalOnly = task.getLocalOnly();
 
 				final SimpleSlot slotFromGroup;
 				if (constraint == null) {
-					slotFromGroup = assignment.getSlotForTask(vertex, isOnlyAllocateByPreferInputs);
+					slotFromGroup = assignment.getSlotForTask(vertex, assignFromGroupLocalOnly);
 				}
 				else {
-					slotFromGroup = assignment.getSlotForTask(vertex, constraint, isOnlyAllocateByPreferInputs);
+					slotFromGroup = assignment.getSlotForTask(vertex, constraint, assignFromGroupLocalOnly);
 				}
 
-				if (isOnlyAllocateByPreferInputs && slotFromGroup == null) {
+				if (assignFromGroupLocalOnly && slotFromGroup == null) {
 					return null;
 				}
 

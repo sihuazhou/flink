@@ -30,7 +30,7 @@ public class ScheduledUnit {
 	
 	private final CoLocationConstraint locationConstraint;
 
-	private boolean onlyAllocateBasePreferInputs;
+	private boolean localOnly;
 	// --------------------------------------------------------------------------------------------
 	
 	public ScheduledUnit(Execution task) {
@@ -39,7 +39,7 @@ public class ScheduledUnit {
 		this.vertexExecution = task;
 		this.sharingGroup = null;
 		this.locationConstraint = null;
-		this.onlyAllocateBasePreferInputs = false;
+		this.localOnly = false;
 	}
 	
 	public ScheduledUnit(Execution task, SlotSharingGroup sharingUnit) {
@@ -48,7 +48,7 @@ public class ScheduledUnit {
 		this.vertexExecution = task;
 		this.sharingGroup = sharingUnit;
 		this.locationConstraint = null;
-		this.onlyAllocateBasePreferInputs = false;
+		this.localOnly = false;
 	}
 	
 	public ScheduledUnit(Execution task, SlotSharingGroup sharingUnit, CoLocationConstraint locationConstraint) {
@@ -59,7 +59,7 @@ public class ScheduledUnit {
 		this.vertexExecution = task;
 		this.sharingGroup = sharingUnit;
 		this.locationConstraint = locationConstraint;
-		this.onlyAllocateBasePreferInputs = false;
+		this.localOnly = false;
 	}
 
 	// --------------------------------------------------------------------------------------------
@@ -80,12 +80,12 @@ public class ScheduledUnit {
 		return locationConstraint;
 	}
 
-	public void setOnlyAllocateBasePreferInputs(boolean onlyAllocateBasePreferInputs) {
-		this.onlyAllocateBasePreferInputs = onlyAllocateBasePreferInputs;
+	public void setLocalOnly(boolean localOnly) {
+		this.localOnly = localOnly;
 	}
 
-	public boolean getOnlyAllocateBasePreferInputs() {
-		return onlyAllocateBasePreferInputs;
+	public boolean getLocalOnly() {
+		return localOnly;
 	}
 
 	// --------------------------------------------------------------------------------------------

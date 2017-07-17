@@ -350,7 +350,7 @@ public class Execution implements AccessExecution, Archiveable<ArchivedExecution
 		}
 	}
 
-	public Future<SimpleSlot> allocateSlotForExecution(SlotProvider slotProvider, boolean queued, boolean onlyAllocateBasePreferLocation)
+	public Future<SimpleSlot> allocateSlotForExecution(SlotProvider slotProvider, boolean queued, boolean localOnly)
 			throws IllegalExecutionStateException {
 
 		checkNotNull(slotProvider);
@@ -371,7 +371,7 @@ public class Execution implements AccessExecution, Archiveable<ArchivedExecution
 					new ScheduledUnit(this, sharingGroup) :
 					new ScheduledUnit(this, sharingGroup, locationConstraint);
 
-			toSchedule.setOnlyAllocateBasePreferInputs(onlyAllocateBasePreferLocation);
+			toSchedule.setLocalOnly(localOnly);
 
 			assignedFutureResource = slotProvider.allocateSlot(toSchedule, queued);
 			if (assignedFutureResource == null) {
