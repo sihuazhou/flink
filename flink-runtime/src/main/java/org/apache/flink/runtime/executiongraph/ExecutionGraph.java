@@ -88,6 +88,8 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
+import java.util.PriorityQueue;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ExecutionException;
@@ -851,16 +853,73 @@ public class ExecutionGraph implements AccessExecutionGraph, Archiveable<Archive
 			// collecting all the slots may resize and fail in that operation without slots getting lost
 			final ArrayList<Future<SimpleSlot>> slotFutures = new ArrayList<>(getNumberOfExecutionJobVertices());
 
-			// allocate the slots (obtain all their futures
+//			// allocate the slots (obtain all their futures
+//			for (ExecutionJobVertex ejv : getVerticesTopologically()) {
+//				// these calls are not blocking, they only return futures
+//				ExecutionAndSlot[] slots = ejv.allocateResourcesForAll(slotProvider, queued);
+//
+//				// we need to first add the slots to this list, to be safe on release
+//				resources.add(slots);
+//
+//				for (ExecutionAndSlot ens : slots) {
+//					slotFutures.add(ens.slotFuture);
+//				}
+//			}
+
+			final Map<ExecutionVertex, Set<ExecutionVertex>> outputMap = new HashMap<>();
+			final PriorityQueue<ExecutionVertex>  evQueue = new PriorityQueue<ExecutionVertex>(this.getTotalNumberOfVertices());
 			for (ExecutionJobVertex ejv : getVerticesTopologically()) {
-				// these calls are not blocking, they only return futures
-				ExecutionAndSlot[] slots = ejv.allocateResourcesForAll(slotProvider, queued);
+				final ExecutionVertex[] evList = ejv.getTaskVertices();
+				for (int i = 0; i < evList.length; ++i) {
+					final ExecutionVertex ev = evList[i];
 
-				// we need to first add the slots to this list, to be safe on release
-				resources.add(slots);
+					evQueue.add(ev);
 
-				for (ExecutionAndSlot ens : slots) {
-					slotFutures.add(ens.slotFuture);
+					for (int j = 0; j < ev.getNumberOfInputs(); ++j) {
+						ExecutionEdge[] sources = ev.getInputEdges(j);
+						for (int z = 0; z < sources.length; ++z) {
+							final ExecutionVertex producer = sources[z].getSource().getProducer();
+							Set<ExecutionVertex> evSet = outputMap.get(producer);
+							if (evSet == null) {
+								evSet = new HashSet<ExecutionVertex>();
+								outputMap.put(producer, evSet);
+							}
+							evSet.add(ev);
+						}
+					}
+				}
+			}
+
+			final List<ExecutionAndSlot> slots = new ArrayList<ExecutionAndSlot>();
+			while (evQueue.isEmpty()) {
+				boolean flag = false;
+				try {
+					//peek the most priority ev from queue
+					ExecutionVertex ev = evQueue.poll();
+
+					//allocate slot for ev
+					final Execution exec = ev.getCurrentExecutionAttempt();
+					final Future<SimpleSlot> future = exec.allocateSlotForExecution(slotProvider, queued);
+					final ExecutionAndSlot eas = new ExecutionAndSlot(exec, future);
+					slots.add(new ExecutionAndSlot(exec, future));
+
+					slotFutures.add(future);
+					flag = true;
+
+					//update he priority queue
+					final Set<ExecutionVertex> evSet = outputMap.get(ev);
+					if (evSet != null) {
+						for (ExecutionVertex outputEv : evSet) {
+							evQueue.remove(outputEv);
+							//compute score
+							evQueue.add(outputEv);
+						}
+					}
+				} finally {
+					if (!flag) {
+						// this is the case if an exception was thrown
+						//release the allocate slot
+					}
 				}
 			}
 
