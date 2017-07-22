@@ -46,6 +46,7 @@ import org.apache.flink.runtime.jobgraph.ScheduleMode;
 import org.apache.flink.runtime.jobmanager.scheduler.ScheduledUnit;
 import org.apache.flink.runtime.jobmanager.scheduler.Scheduler;
 import org.apache.flink.runtime.jobmanager.scheduler.SlotSharingGroup;
+import org.apache.flink.runtime.jobmanager.slots.ActorTaskManagerGateway;
 import org.apache.flink.runtime.jobmanager.slots.AllocatedSlot;
 import org.apache.flink.runtime.jobmanager.slots.SlotOwner;
 import org.apache.flink.runtime.jobmanager.slots.TaskManagerGateway;
@@ -599,7 +600,6 @@ public class ExecutionGraphSchedulingTest extends TestLogger {
 
 			final JobGraph jobGraph = new JobGraph(jobId, "test", source1, source2, target1, target2);
 
-			ProgrammedSlotProvider slotProvider = new ProgrammedSlotProvider(4);
 
 			final TaskManagerGateway gatewaySource = createTaskManager();
 			final TaskManagerGateway gatewayTarget = createTaskManager();
@@ -614,6 +614,8 @@ public class ExecutionGraphSchedulingTest extends TestLogger {
 			final FlinkCompletableFuture<SimpleSlot> futureSlot2 = FlinkCompletableFuture.completed(slot2);
 			final FlinkCompletableFuture<SimpleSlot> futureSlot3 = FlinkCompletableFuture.completed(slot3);
 			final FlinkCompletableFuture<SimpleSlot> futureSlot4 = FlinkCompletableFuture.completed(slot4);
+
+			ProgrammedSlotProvider slotProvider = new ProgrammedSlotProvider(4);
 
 			slotProvider.addSlot(source1.getID(), 0, futureSlot1);
 			slotProvider.addSlot(source1.getID(), 1, futureSlot2);
@@ -668,6 +670,102 @@ public class ExecutionGraphSchedulingTest extends TestLogger {
 			fail(e.getMessage());
 		}
 	}
+
+	@Test
+	public void testAllocateOpimal() {
+		try {
+			final JobID jobId = new JobID();
+
+			final JobVertexID source1Id = new JobVertexID();
+			final JobVertexID source2Id = new JobVertexID();
+			final JobVertexID target1Id = new JobVertexID();
+			final JobVertexID target2Id = new JobVertexID();
+
+			JobVertex source1 = new JobVertex("source1", source1Id);
+			JobVertex source2 = new JobVertex("source2", source2Id);
+			JobVertex target1 = new JobVertex("target1", target1Id);
+			JobVertex target2 = new JobVertex("target2", target2Id);
+
+			source1.setParallelism(2);
+			source2.setParallelism(4);
+			target1.setParallelism(3);
+			target2.setParallelism(2);
+
+			SlotSharingGroup group = new SlotSharingGroup();
+			source1.setSlotSharingGroup(group);
+			source2.setSlotSharingGroup(group);
+			target1.setSlotSharingGroup(group);
+			target2.setSlotSharingGroup(group);
+
+			source1.setInvokableClass(NoOpInvokable.class);
+			source2.setInvokableClass(NoOpInvokable.class);
+			target1.setInvokableClass(NoOpInvokable.class);
+			target2.setInvokableClass(NoOpInvokable.class);
+
+			target1.connectNewDataSetAsInput(source1, DistributionPattern.POINTWISE, ResultPartitionType.PIPELINED_BOUNDED);
+			target1.connectNewDataSetAsInput(source2, DistributionPattern.POINTWISE, ResultPartitionType.PIPELINED_BOUNDED);
+			target2.connectNewDataSetAsInput(source2, DistributionPattern.POINTWISE, ResultPartitionType.PIPELINED_BOUNDED);
+
+			final JobGraph jobGraph = new JobGraph(jobId, "test", source1, source2, target1, target2);
+
+			Scheduler scheduler = new Scheduler(TestingUtils.directExecutionContext());
+			for (int i = 0; i < 4; i++) {
+				scheduler.newInstanceAvailable(
+					ExecutionGraphTestUtils.getInstance(
+						new ActorTaskManagerGateway(
+							new ExecutionGraphTestUtils.SimpleActorGateway(
+								TestingUtils.directExecutionContext()))));
+			}
+
+			ExecutionGraph eg = createExecutionGraph(jobGraph, scheduler);
+
+			eg.setScheduleMode(ScheduleMode.EAGER);
+			eg.scheduleForExecution();
+
+			final Map<JobVertexID, ExecutionJobVertex> exeJobVertexMap = eg.getAllVertices();
+
+			checkLocalCount(exeJobVertexMap.get(source1Id), 0);
+			checkLocalCount(exeJobVertexMap.get(source2Id), 0);
+			checkLocalCount(exeJobVertexMap.get(target1Id), 2);
+			checkLocalCount(exeJobVertexMap.get(target2Id), 2);
+
+		} catch (Exception e) {
+			e.printStackTrace();
+			fail(e.getMessage());
+		}
+
+	}
+
+	private void checkLocalCount(ExecutionJobVertex ejv, int localCount) {
+
+		try {
+			int count = 0;
+			for (ExecutionVertex ev : ejv.getTaskVertices()) {
+				TaskManagerLocation tml = ev.getCurrentExecutionAttempt().getAssignedFutureResource().get().getTaskManagerLocation();
+				boolean isLocal = false;
+				for (int i = 0; i < ev.getNumberOfInputs(); ++i) {
+					final ExecutionEdge[] edgs = ev.getInputEdges(i);
+					for (int j = 0; j < edgs.length; ++j) {
+						TaskManagerLocation tml2 = edgs[j].getSource().getProducer().getCurrentExecutionAttempt().getAssignedFutureResource().get().getTaskManagerLocation();
+						if (tml.getResourceID().equals(tml2.getResourceID())) {
+							isLocal = true;
+							break;
+						}
+					}
+				}
+				if (isLocal) {
+					++ count;
+				}
+			}
+			assertTrue(count == localCount);
+		} catch (Exception e) {
+			e.printStackTrace();
+			fail(e.getMessage());
+		}
+
+	}
+
+
 
 	// ------------------------------------------------------------------------
 	//  Utilities

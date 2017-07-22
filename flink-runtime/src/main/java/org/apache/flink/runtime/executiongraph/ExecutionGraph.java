@@ -18,6 +18,7 @@
 
 package org.apache.flink.runtime.executiongraph;
 
+import com.sun.rmi.rmid.ExecPermission;
 import org.apache.flink.annotation.VisibleForTesting;
 import org.apache.flink.api.common.Archiveable;
 import org.apache.flink.api.common.ArchivedExecutionConfig;
@@ -38,6 +39,7 @@ import org.apache.flink.runtime.checkpoint.CheckpointStatsSnapshot;
 import org.apache.flink.runtime.checkpoint.CheckpointStatsTracker;
 import org.apache.flink.runtime.checkpoint.CompletedCheckpointStore;
 import org.apache.flink.runtime.checkpoint.MasterTriggerRestoreHook;
+import org.apache.flink.runtime.clusterframework.types.ResourceID;
 import org.apache.flink.runtime.concurrent.AcceptFunction;
 import org.apache.flink.runtime.concurrent.BiFunction;
 import org.apache.flink.runtime.concurrent.CompletableFuture;
@@ -275,7 +277,7 @@ public class ExecutionGraph implements AccessExecutionGraph, Archiveable<Archive
 	 * available after archiving. */
 	private CheckpointStatsTracker checkpointStatsTracker;
 
-	private final SlotEvaluator slotEvaluator = new DefaultSlotEvaluator();
+	private final DefaultSlotEvaluator slotEvaluator = new DefaultSlotEvaluator();
 
 	// ------ Fields that are only relevant for archived execution graphs ------------
 	private String jsonPlan;
@@ -862,7 +864,7 @@ public class ExecutionGraph implements AccessExecutionGraph, Archiveable<Archive
 			final PriorityQueue<ExecutionVertex>  evQueue = new PriorityQueue<>(getTotalNumberOfVertices(), new Comparator<ExecutionVertex>() {
 				@Override
 				public int compare(ExecutionVertex o1, ExecutionVertex o2) {
-					return slotEvaluator.evaluateVertex(o1) - slotEvaluator.evaluateVertex(o2);
+					return slotEvaluator.evaluateVertex(o2) - slotEvaluator.evaluateVertex(o1);
 				}
 			});
 
@@ -889,6 +891,12 @@ public class ExecutionGraph implements AccessExecutionGraph, Archiveable<Archive
 				}
 			}
 
+			Iterator<ExecutionJobVertex> ite = getVerticesTopologically().iterator();
+			ExecutionJobVertex e1 = ite.next();
+			ExecutionJobVertex e2 = ite.next();
+			ExecutionJobVertex e3 = ite.next();
+			ExecutionJobVertex e4 = ite.next();
+
 			while (!evQueue.isEmpty()) {
 				boolean exeAllocateSuccess = false;
 				try {
@@ -906,6 +914,8 @@ public class ExecutionGraph implements AccessExecutionGraph, Archiveable<Archive
 					exeAllocateSuccess = true;
 
 					//update he priority queue
+					slotEvaluator.udpateInfo(ev);
+
 					final Set<ExecutionVertex> evSet = outputMap.get(ev);
 					if (evSet != null) {
 						for (ExecutionVertex outputEv : evSet) {
@@ -914,6 +924,15 @@ public class ExecutionGraph implements AccessExecutionGraph, Archiveable<Archive
 								//compute score
 								evQueue.add(outputEv);
 							}
+						}
+					}
+
+					ExecutionVertex[] brothers = ev.getJobVertex().getTaskVertices();
+					for (int i = 0; i < brothers.length; ++i) {
+						if (brothers[i].getCurrentExecutionAttempt().getAssignedFutureResource() == null) {
+							evQueue.remove(brothers[i]);
+							//compute score
+							evQueue.add(brothers[i]);
 						}
 					}
 				} finally {
@@ -1768,20 +1787,53 @@ public class ExecutionGraph implements AccessExecutionGraph, Archiveable<Archive
 			getCheckpointStatsSnapshot());
 	}
 
-
 	private static class DefaultSlotEvaluator implements SlotEvaluator {
+
+		private final Map<JobVertexID, Set<ResourceID>> resIdSetMap = new HashMap<>();
+		private final Map<JobVertexID, Integer> baseScoreMap = new HashMap<>();
+
 		@Override
 		public int evaluateVertex(ExecutionVertex ev) {
 			int score = 0;
-			for (int i = 0; i < ev.getNumberOfInputs(); ++i) {
-				final ExecutionEdge[] edgs = ev.getInputEdges(i);
-				for (int j = 0; j < edgs.length; ++j) {
-					if (edgs[j].getSource().getProducer().getCurrentExecutionAttempt().getAssignedFutureResource() != null) {
-						++score;
+			try {
+				final Set<ResourceID> resIdSet = resIdSetMap.get(ev.getJobvertexId());
+
+				if (baseScoreMap.isEmpty()) {
+					int initBaseScore = ev.getExecutionGraph().getNumberOfExecutionJobVertices();
+					for (ExecutionJobVertex ejv : ev.getExecutionGraph().getVerticesTopologically()) {
+						baseScoreMap.put(ejv.getJobVertexId(), initBaseScore--);
 					}
 				}
+
+				score = baseScoreMap.get(ev.getJobvertexId());
+				for (int i = 0; i < ev.getNumberOfInputs(); ++i) {
+					final ExecutionEdge[] edgs = ev.getInputEdges(i);
+					for (int j = 0; j < edgs.length; ++j) {
+						final Future<SimpleSlot> slot = edgs[j].getSource().getProducer().getCurrentExecutionAttempt().getAssignedFutureResource();
+						if (slot != null && (resIdSet == null || !resIdSet.contains(slot.get().getTaskManagerLocation().getResourceID()))) {
+							score += 100;
+						}
+					}
+				}
+			} catch (Exception e) {
+				e.printStackTrace();
 			}
+
 			return score;
+		}
+
+		public void udpateInfo(ExecutionVertex ev) {
+			try {
+				final JobVertexID jobVertexID = ev.getJobvertexId();
+				Set<ResourceID> resIdSet = resIdSetMap.get(jobVertexID);
+				if (resIdSet == null) {
+					resIdSet = new HashSet<>();
+					resIdSetMap.put(jobVertexID, resIdSet);
+				}
+				resIdSetMap.get(jobVertexID).add(ev.getCurrentExecutionAttempt().getAssignedFutureResource().get().getTaskManagerLocation().getResourceID());
+			} catch (Exception e) {
+				e.printStackTrace();
+			}
 		}
 	}
 
