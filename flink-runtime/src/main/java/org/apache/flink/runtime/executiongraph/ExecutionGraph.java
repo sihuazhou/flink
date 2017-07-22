@@ -82,6 +82,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
@@ -273,6 +274,8 @@ public class ExecutionGraph implements AccessExecutionGraph, Archiveable<Archive
 	/** Checkpoint stats tracker separate from the coordinator in order to be
 	 * available after archiving. */
 	private CheckpointStatsTracker checkpointStatsTracker;
+
+	private final SlotEvaluator slotEvaluator = new DefaultSlotEvaluator();
 
 	// ------ Fields that are only relevant for archived execution graphs ------------
 	private String jsonPlan;
@@ -842,7 +845,9 @@ public class ExecutionGraph implements AccessExecutionGraph, Archiveable<Archive
 		// that way we do not have any operation that can fail between allocating the slots
 		// and adding them to the list. If we had a failure in between there, that would
 		// cause the slots to get lost
-		final ArrayList<ExecutionAndSlot[]> resources = new ArrayList<>(getNumberOfExecutionJobVertices());
+
+		final ArrayList<ArrayList<ExecutionAndSlot>> resources = new ArrayList<>(getNumberOfExecutionJobVertices());
+
 		final boolean queued = allowQueuedScheduling;
 
 		// we use this flag to handle failures in a 'finally' clause
@@ -852,36 +857,30 @@ public class ExecutionGraph implements AccessExecutionGraph, Archiveable<Archive
 		try {
 			// collecting all the slots may resize and fail in that operation without slots getting lost
 			final ArrayList<Future<SimpleSlot>> slotFutures = new ArrayList<>(getNumberOfExecutionJobVertices());
-
-//			// allocate the slots (obtain all their futures
-//			for (ExecutionJobVertex ejv : getVerticesTopologically()) {
-//				// these calls are not blocking, they only return futures
-//				ExecutionAndSlot[] slots = ejv.allocateResourcesForAll(slotProvider, queued);
-//
-//				// we need to first add the slots to this list, to be safe on release
-//				resources.add(slots);
-//
-//				for (ExecutionAndSlot ens : slots) {
-//					slotFutures.add(ens.slotFuture);
-//				}
-//			}
-
 			final Map<ExecutionVertex, Set<ExecutionVertex>> outputMap = new HashMap<>();
-			final PriorityQueue<ExecutionVertex>  evQueue = new PriorityQueue<ExecutionVertex>(this.getTotalNumberOfVertices());
+			final Map<JobVertexID, Integer> topologicalIndexMap = new HashMap<>();
+			final PriorityQueue<ExecutionVertex>  evQueue = new PriorityQueue<>(getTotalNumberOfVertices(), new Comparator<ExecutionVertex>() {
+				@Override
+				public int compare(ExecutionVertex o1, ExecutionVertex o2) {
+					return slotEvaluator.evaluateVertex(o1) - slotEvaluator.evaluateVertex(o2);
+				}
+			});
+
+			int topologicalIndex = 0;
 			for (ExecutionJobVertex ejv : getVerticesTopologically()) {
+				resources.add(new ArrayList<ExecutionAndSlot>());
+				topologicalIndexMap.put(ejv.getJobVertexId(), topologicalIndex++);
 				final ExecutionVertex[] evList = ejv.getTaskVertices();
 				for (int i = 0; i < evList.length; ++i) {
 					final ExecutionVertex ev = evList[i];
-
 					evQueue.add(ev);
-
 					for (int j = 0; j < ev.getNumberOfInputs(); ++j) {
 						ExecutionEdge[] sources = ev.getInputEdges(j);
 						for (int z = 0; z < sources.length; ++z) {
 							final ExecutionVertex producer = sources[z].getSource().getProducer();
 							Set<ExecutionVertex> evSet = outputMap.get(producer);
 							if (evSet == null) {
-								evSet = new HashSet<ExecutionVertex>();
+								evSet = new HashSet<>();
 								outputMap.put(producer, evSet);
 							}
 							evSet.add(ev);
@@ -890,9 +889,8 @@ public class ExecutionGraph implements AccessExecutionGraph, Archiveable<Archive
 				}
 			}
 
-			final List<ExecutionAndSlot> slots = new ArrayList<ExecutionAndSlot>();
-			while (evQueue.isEmpty()) {
-				boolean flag = false;
+			while (!evQueue.isEmpty()) {
+				boolean exeAllocateSuccess = false;
 				try {
 					//peek the most priority ev from queue
 					ExecutionVertex ev = evQueue.poll();
@@ -901,24 +899,28 @@ public class ExecutionGraph implements AccessExecutionGraph, Archiveable<Archive
 					final Execution exec = ev.getCurrentExecutionAttempt();
 					final Future<SimpleSlot> future = exec.allocateSlotForExecution(slotProvider, queued);
 					final ExecutionAndSlot eas = new ExecutionAndSlot(exec, future);
-					slots.add(new ExecutionAndSlot(exec, future));
 
+					resources.get(topologicalIndexMap.get(ev.getJobvertexId())).add(eas);
 					slotFutures.add(future);
-					flag = true;
+
+					exeAllocateSuccess = true;
 
 					//update he priority queue
 					final Set<ExecutionVertex> evSet = outputMap.get(ev);
 					if (evSet != null) {
 						for (ExecutionVertex outputEv : evSet) {
-							evQueue.remove(outputEv);
-							//compute score
-							evQueue.add(outputEv);
+							if (outputEv.getCurrentExecutionAttempt().getAssignedFutureResource() == null) {
+								evQueue.remove(outputEv);
+								//compute score
+								evQueue.add(outputEv);
+							}
 						}
 					}
 				} finally {
-					if (!flag) {
+					if (!exeAllocateSuccess) {
 						// this is the case if an exception was thrown
 						//release the allocate slot
+						ExecutionGraphUtils.releaseAllSlotsSilently(resources);
 					}
 				}
 			}
@@ -953,19 +955,16 @@ public class ExecutionGraph implements AccessExecutionGraph, Archiveable<Archive
 
 						if (throwable == null) {
 							// successfully obtained all slots, now deploy
-
-							for (ExecutionAndSlot[] jobVertexTasks : resources) {
-								for (ExecutionAndSlot execAndSlot : jobVertexTasks) {
-
+							for (List<ExecutionAndSlot> execAndSlots: resources) {
+								for (ExecutionAndSlot execAndSlot: execAndSlots) {
 									// the futures must all be ready - this is simply a sanity check
 									final SimpleSlot slot;
 									try {
 										slot = execAndSlot.slotFuture.getNow(null);
 										checkNotNull(slot);
-									}
-									catch (ExecutionException | NullPointerException e) {
+									} catch (ExecutionException | NullPointerException e) {
 										throw new IllegalStateException("SlotFuture is incomplete " +
-												"or erroneous even though all futures completed");
+											"or erroneous even though all futures completed");
 									}
 
 									// actual deployment
@@ -1767,5 +1766,26 @@ public class ExecutionGraph implements AccessExecutionGraph, Archiveable<Archive
 			isStoppable(),
 			getJobCheckpointingSettings(),
 			getCheckpointStatsSnapshot());
+	}
+
+
+	private static class DefaultSlotEvaluator implements SlotEvaluator {
+		@Override
+		public int evaluateVertex(ExecutionVertex ev) {
+			int score = 0;
+			for (int i = 0; i < ev.getNumberOfInputs(); ++i) {
+				final ExecutionEdge[] edgs = ev.getInputEdges(i);
+				for (int j = 0; j < edgs.length; ++j) {
+					if (edgs[j].getSource().getProducer().getCurrentExecutionAttempt().getAssignedFutureResource() != null) {
+						++score;
+					}
+				}
+			}
+			return score;
+		}
+	}
+
+	private interface SlotEvaluator {
+		int evaluateVertex(ExecutionVertex ev);
 	}
 }

@@ -32,6 +32,7 @@ import org.apache.flink.runtime.taskmanager.TaskManagerLocation;
 import org.junit.Test;
 
 import java.net.InetAddress;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
@@ -87,21 +88,19 @@ public class ExecutionGraphUtilsTest {
 		final SimpleSlot slot4 = new SimpleSlot(createAllocatedSlot(jid, 3), owner, 3);
 		final SimpleSlot slot5 = new SimpleSlot(createAllocatedSlot(jid, 4), owner, 4);
 
-		ExecutionAndSlot[] slots1 = new ExecutionAndSlot[] {
-				null,
-				new ExecutionAndSlot(mockExecution, FlinkCompletableFuture.completed(slot1)),
-				null,
-				new ExecutionAndSlot(mockExecution, FlinkCompletableFuture.completed(slot2)),
-				null
-		};
+		ArrayList<ExecutionAndSlot> slots1 = new ArrayList<ExecutionAndSlot>();
+		slots1.add(null);
+		slots1.add(new ExecutionAndSlot(mockExecution, FlinkCompletableFuture.completed(slot1)));
+		slots1.add(null);
+		slots1.add(new ExecutionAndSlot(mockExecution, FlinkCompletableFuture.completed(slot2)));
+		slots1.add(null);
 
-		ExecutionAndSlot[] slots2 = new ExecutionAndSlot[] {
-				new ExecutionAndSlot(mockExecution, FlinkCompletableFuture.completed(slot3)),
-				new ExecutionAndSlot(mockExecution, FlinkCompletableFuture.completed(slot4)),
-				new ExecutionAndSlot(mockExecution, FlinkCompletableFuture.completed(slot5))
-		};
+		ArrayList<ExecutionAndSlot> slots2 = new ArrayList<ExecutionAndSlot>();
+		slots2.add(new ExecutionAndSlot(mockExecution, FlinkCompletableFuture.completed(slot3)));
+		slots2.add(new ExecutionAndSlot(mockExecution, FlinkCompletableFuture.completed(slot4)));
+		slots2.add(new ExecutionAndSlot(mockExecution, FlinkCompletableFuture.completed(slot5)));
 
-		List<ExecutionAndSlot[]> resources = Arrays.asList(null, slots1, new ExecutionAndSlot[0], null, slots2);
+		List<ArrayList<ExecutionAndSlot>> resources = Arrays.asList(null, slots1, new ArrayList<ExecutionAndSlot>(), null, slots2);
 
 		ExecutionGraphUtils.releaseAllSlotsSilently(resources);
 

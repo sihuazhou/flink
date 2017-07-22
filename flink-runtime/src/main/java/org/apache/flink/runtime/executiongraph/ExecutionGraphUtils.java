@@ -21,9 +21,12 @@ package org.apache.flink.runtime.executiongraph;
 import org.apache.flink.runtime.concurrent.BiFunction;
 import org.apache.flink.runtime.concurrent.Future;
 import org.apache.flink.runtime.instance.SimpleSlot;
+import org.apache.flink.runtime.jobgraph.JobVertexID;
 import org.apache.flink.util.ExceptionUtils;
 
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Utilities for dealing with the execution graphs and scheduling.
@@ -58,9 +61,9 @@ public class ExecutionGraphUtils {
 	 * 
 	 * @param resources The collection of ExecutionAndSlot whose slots should be released.
 	 */
-	public static void releaseAllSlotsSilently(List<ExecutionAndSlot[]> resources) {
+	public static void releaseAllSlotsSilently(List<ArrayList<ExecutionAndSlot>> resources) {
 		try {
-			for (ExecutionAndSlot[] jobVertexResources : resources) {
+			for (List<ExecutionAndSlot> jobVertexResources : resources) {
 				if (jobVertexResources != null) {
 					for (ExecutionAndSlot execAndSlot : jobVertexResources) {
 						if (execAndSlot != null) {
