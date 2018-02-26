@@ -718,10 +718,10 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 			boolean hasExtraKeys = (restoreStateHandles.size() > 1 ||
 				!Objects.equals(restoreStateHandles.iterator().next().getKeyGroupRange(), stateBackend.keyGroupRange));
 
-			if (hasExtraKeys) {
-				restoreFromMultiHandles(restoreStateHandles);
-			} else {
+			if (!hasExtraKeys) {
 				restoreFromSingleHandle(restoreStateHandles.iterator().next());
+			} else {
+				restoreFromMultiHandles(restoreStateHandles);
 			}
 		}
 
@@ -734,14 +734,14 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 			List<RegisteredKeyedBackendStateMetaInfo.Snapshot<?, ?>> stateMetaInfoSnapshots;
 			List<ColumnFamilyDescriptor> columnFamilyDescriptors;
 
-			if (rawStateHandle instanceof IncrementalKeyedStateHandle) {
+			// Recovery from remote incremental state.
+			Path temporaryRestoreInstancePath = new Path(
+				stateBackend.instanceBasePath.getAbsolutePath(),
+				UUID.randomUUID().toString());
 
-				// Recovery from remote incremental state.
-				Path temporaryRestoreInstancePath = new Path(
-					stateBackend.instanceBasePath.getAbsolutePath(),
-					UUID.randomUUID().toString());
+			try {
+				if (rawStateHandle instanceof IncrementalKeyedStateHandle) {
 
-				try {
 					IncrementalKeyedStateHandle restoreStateHandle = (IncrementalKeyedStateHandle) rawStateHandle;
 
 					// read state data
@@ -759,32 +759,27 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 						restoreStateHandle.getKeyGroupRange(),
 						restoreStateHandle.getMetaStateHandle(),
 						restoreStateHandle.getSharedState().keySet());
+				} else if (rawStateHandle instanceof IncrementalLocalKeyedStateHandle) {
 
-					restoreLocalStateIntoFullInstance(
-						localKeyedStateHandle,
-						columnFamilyDescriptors,
-						stateMetaInfoSnapshots);
-				} finally {
-					FileSystem restoreFileSystem = temporaryRestoreInstancePath.getFileSystem();
-					if (restoreFileSystem.exists(temporaryRestoreInstancePath)) {
-						restoreFileSystem.delete(temporaryRestoreInstancePath, true);
-					}
+					// Recovery from local incremental state.
+					localKeyedStateHandle = (IncrementalLocalKeyedStateHandle) rawStateHandle;
+					stateMetaInfoSnapshots = readMetaData(localKeyedStateHandle.getMetaDataState());
+					columnFamilyDescriptors = createAndRegisterColumnFamilyDescriptors(stateMetaInfoSnapshots);
+				} else {
+					throw new IllegalStateException("Unexpected state handle type, " +
+						"expected " + IncrementalKeyedStateHandle.class +
+						", but found " + rawStateHandle.getClass());
 				}
-			} else if (rawStateHandle instanceof IncrementalLocalKeyedStateHandle) {
-
-				// Recovery from local incremental state.
-				localKeyedStateHandle = (IncrementalLocalKeyedStateHandle) rawStateHandle;
-				stateMetaInfoSnapshots = readMetaData(localKeyedStateHandle.getMetaDataState());
-				columnFamilyDescriptors = createAndRegisterColumnFamilyDescriptors(stateMetaInfoSnapshots);
 
 				restoreLocalStateIntoFullInstance(
 					localKeyedStateHandle,
 					columnFamilyDescriptors,
 					stateMetaInfoSnapshots);
-			} else {
-				throw new IllegalStateException("Unexpected state handle type, " +
-					"expected " + IncrementalKeyedStateHandle.class +
-					", but found " + rawStateHandle.getClass());
+			} finally {
+				FileSystem restoreFileSystem = temporaryRestoreInstancePath.getFileSystem();
+				if (restoreFileSystem.exists(temporaryRestoreInstancePath)) {
+					restoreFileSystem.delete(temporaryRestoreInstancePath, true);
+				}
 			}
 		}
 
@@ -815,12 +810,11 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 				}
 
 				Path temporaryRestoreInstancePath = new Path(stateBackend.instanceBasePath.getAbsolutePath() + UUID.randomUUID().toString());
-				try (RestoreDBInfo tmpRestoreDBInfo = restoreDBFromStateHandle(
+				try (RestoredDBInfo tmpRestoreDBInfo = restoreDBFromStateHandle(
 						(IncrementalKeyedStateHandle) rawStateHandle,
 						temporaryRestoreInstancePath,
 						targetKeyGroupRange,
-						stateBackend.keyGroupPrefixBytes);
-					ColumnFamilyHandle defaultColumnFamilyHandle = tmpRestoreDBInfo.columnFamilyHandles.remove(0)) {
+						stateBackend.keyGroupPrefixBytes)) {
 
 					List<ColumnFamilyDescriptor> tmpColumnFamilyDescriptors = tmpRestoreDBInfo.columnFamilyDescriptors;
 					List<ColumnFamilyHandle> tmpColumnFamilyHandles = tmpRestoreDBInfo.columnFamilyHandles;
@@ -852,65 +846,38 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 			}
 		}
 
-		private void clipDBWithKeyGroupRange(
-			RocksDB db,
-			List<ColumnFamilyHandle> columnFamilyHandles,
-			KeyGroupRange targetGroupRange,
-			KeyGroupRange currentGroupRange,
-			int keyGroupPrefixBytes) throws RocksDBException {
-
-			for (ColumnFamilyHandle columnFamilyHandle: columnFamilyHandles) {
-				if (currentGroupRange.getStartKeyGroup() < targetGroupRange.getStartKeyGroup()) {
-					byte[] beginKey = serializeKeyGroup(currentGroupRange.getStartKeyGroup(), keyGroupPrefixBytes);
-					byte[] endKye = serializeKeyGroup(targetGroupRange.getStartKeyGroup(), keyGroupPrefixBytes);
-					db.deleteRange(columnFamilyHandle, beginKey, endKye);
-				}
-
-				if (currentGroupRange.getEndKeyGroup() > targetGroupRange.getEndKeyGroup()) {
-					byte[] beginKey = serializeKeyGroup(targetGroupRange.getEndKeyGroup() + 1, keyGroupPrefixBytes);
-					byte[] endKey = new byte[keyGroupPrefixBytes];
-					for (int i = 0; i < keyGroupPrefixBytes; ++i) {
-						endKey[i] |= 1;
-					}
-					db.deleteRange(columnFamilyHandle, beginKey, endKey);
-				}
-			}
-		}
-
-		private byte[] serializeKeyGroup(int keyGroup, int keyGroupPrefixBytes) {
-			byte[] startKeyGroupPrefixBytes = new byte[keyGroupPrefixBytes];
-			for (int j = 0; j < keyGroupPrefixBytes; ++j) {
-				startKeyGroupPrefixBytes[j] = (byte) (keyGroup >>> ((stateBackend.keyGroupPrefixBytes - j - 1) * Byte.SIZE));
-			}
-			return startKeyGroupPrefixBytes;
-		}
-
-		private class RestoreDBInfo implements AutoCloseable {
+		private class RestoredDBInfo implements AutoCloseable {
 			private RocksDB db;
+			private ColumnFamilyHandle defaultColumnFamilyHandle;
 			private List<ColumnFamilyHandle> columnFamilyHandles;
 			private List<ColumnFamilyDescriptor> columnFamilyDescriptors;
 			private List<RegisteredKeyedBackendStateMetaInfo.Snapshot<?, ?>> stateMetaInfoSnapshots;
 
-			public RestoreDBInfo(RocksDB db,
+			public RestoredDBInfo(RocksDB db,
 								List<ColumnFamilyHandle> columnFamilyHandles,
 								List<ColumnFamilyDescriptor> columnFamilyDescriptors,
 								List<RegisteredKeyedBackendStateMetaInfo.Snapshot<?, ?>> stateMetaInfoSnapshots) {
 				this.db = db;
 				this.columnFamilyHandles = columnFamilyHandles;
+				this.defaultColumnFamilyHandle = this.columnFamilyHandles.remove(0);
 				this.columnFamilyDescriptors = columnFamilyDescriptors;
 				this.stateMetaInfoSnapshots = stateMetaInfoSnapshots;
 			}
 
 			@Override
 			public void close() throws Exception {
+
+				IOUtils.closeQuietly(defaultColumnFamilyHandle);
+
 				for (ColumnFamilyHandle columnFamilyHandle : columnFamilyHandles) {
 					IOUtils.closeQuietly(columnFamilyHandle);
 				}
+
 				IOUtils.closeQuietly(db);
 			}
 		}
 
-		private RestoreDBInfo restoreDBFromStateHandle(
+		private RestoredDBInfo restoreDBFromStateHandle(
 			IncrementalKeyedStateHandle restoreStateHandle,
 			Path temporaryRestoreInstancePath,
 			KeyGroupRange targetKeyGroupRange,
@@ -942,33 +909,14 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 				columnFamilyDescriptors,
 				columnFamilyHandles);
 
-			clipDBWithKeyGroupRange(
+			RocksDBIncrementalCheckpointUtils.clipDBWithKeyGroupRange(
 				restoreDb,
 				columnFamilyHandles,
 				targetKeyGroupRange,
 				restoreStateHandle.getKeyGroupRange(),
 				keyGroupPrefixBytes);
 
-			return new RestoreDBInfo(restoreDb, columnFamilyHandles, columnFamilyDescriptors, stateMetaInfoSnapshots);
-		}
-
-		private int evaluateGroupRange(KeyGroupRange range1, KeyGroupRange range2) {
-			int start1 = range1.getStartKeyGroup();
-			int end1 = range1.getEndKeyGroup();
-
-			int start2 = range2.getStartKeyGroup();
-			int end2 = range2.getEndKeyGroup();
-
-			int insectStart = start1;
-			if (start2 > start1) {
-				insectStart = start2;
-			}
-
-			int insectEnd = end1;
-			if (end2 < end1) {
-				insectEnd = end2;
-			}
-			return insectEnd - insectStart + 1;
+			return new RestoredDBInfo(restoreDb, columnFamilyHandles, columnFamilyDescriptors, stateMetaInfoSnapshots);
 		}
 
 		private ColumnFamilyHandle getOrRegisterColumnFamilyHandle(
@@ -1007,7 +955,8 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 			int evalScore = Integer.MIN_VALUE;
 			IncrementalKeyedStateHandle bestInitStateHandle = null;
 			for (KeyedStateHandle rawStateHandle : restoreStateHandles) {
-				int tmpEvalScore = evaluateGroupRange(targetKeyGroupRange, rawStateHandle.getKeyGroupRange());
+				int tmpEvalScore = RocksDBIncrementalCheckpointUtils.evaluateGroupRange(
+					targetKeyGroupRange, rawStateHandle.getKeyGroupRange());
 				if (evalScore < tmpEvalScore) {
 					evalScore = tmpEvalScore;
 					bestInitStateHandle = (IncrementalKeyedStateHandle) rawStateHandle;
@@ -1015,7 +964,7 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 			}
 			restoreStateHandles.remove(bestInitStateHandle);
 
-			RestoreDBInfo restoreDBInfo = null;
+			RestoredDBInfo restoreDBInfo = null;
 			Path instancePath = new Path(stateBackend.instanceRocksDBPath.getAbsolutePath());
 			try {
 				restoreDBInfo = restoreDBFromStateHandle(
@@ -1026,7 +975,7 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 
 				stateBackend.db = restoreDBInfo.db;
 
-				stateBackend.defaultColumnFamily = restoreDBInfo.columnFamilyHandles.remove(0);
+				stateBackend.defaultColumnFamily = restoreDBInfo.defaultColumnFamilyHandle;
 
 				for (int i = 0; i < restoreDBInfo.stateMetaInfoSnapshots.size(); ++i) {
 					getOrRegisterColumnFamilyHandle(
