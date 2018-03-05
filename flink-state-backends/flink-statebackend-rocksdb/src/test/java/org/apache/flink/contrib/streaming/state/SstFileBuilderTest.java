@@ -137,7 +137,11 @@ public class SstFileBuilderTest {
 
 		ExecutorService executorService = Executors.newFixedThreadPool(4);
 
-		try (final RocksDB rocksDB1 = RocksDB.open(tempFolder.newFolder().getAbsolutePath());
+		try (final RocksDB rocksDB1 = RocksDB.open(
+			PredefinedOptions.SPINNING_DISK_OPTIMIZED.createDBOptions().setCreateIfMissing(true),
+			tempFolder.newFolder().getAbsolutePath(),
+			Collections.singletonList(new ColumnFamilyDescriptor("default".getBytes())),
+			new ArrayList<>());
 			 final RocksDB rocksDB2 = RocksDB.open(tempFolder.newFolder().getAbsolutePath());
 			 final RocksDB rocksDB3 = RocksDB.open(tempFolder.newFolder().getAbsolutePath());
 			 final WriteOptions writeOptions = new WriteOptions().setDisableWAL(true);
@@ -157,9 +161,7 @@ public class SstFileBuilderTest {
 			ColumnFamilyHandle[] handlesForRocksDB3 = new ColumnFamilyHandle[1];
 			handlesForRocksDB3[0] = testHandleForRocksDB3;
 
-			SimpleKeyGroupIterable keyGroupIterable1 = new SimpleKeyGroupIterable(handlesForRocksDB2, 0, 2_000_000);
-			SimpleKeyGroupIterable keyGroupIterable2 = new SimpleKeyGroupIterable(handlesForRocksDB3, 0, 1_000_000);
-			SimpleKeyGroupIterable keyGroupIterable3 = new SimpleKeyGroupIterable(handlesForRocksDB3, 1_000_000, 2_000_000);
+			SimpleKeyGroupIterable keyGroupIterable1 = new SimpleKeyGroupIterable(handlesForRocksDB2, 0, 10_000_000);
 
 			long t1 = System.currentTimeMillis();
 			Iterator<Tuple3<ColumnFamilyHandle, byte[], byte[]>> iterator = keyGroupIterable1.iterator();
@@ -175,7 +177,7 @@ public class SstFileBuilderTest {
 			// with parallelism 1
 			SstFileBuilder sstFileBuilder = new SstFileBuilder(
 				tempFolder.newFolder().getAbsolutePath(),
-				64_1024_1024L,
+				32 * 1024 * 1024,
 				executorService,
 				new SimpleSstHandle(rocksDB2));
 
@@ -186,16 +188,35 @@ public class SstFileBuilderTest {
 			testHandleForRocksDB2.close();
 			rocksDB2.close();
 
+			keyGroupIterable1.getRecords().clear();
+
+			SimpleKeyGroupIterable keyGroupIterable2 = new SimpleKeyGroupIterable(handlesForRocksDB3, 0, 2_500_000);
+			SimpleKeyGroupIterable keyGroupIterable3 = new SimpleKeyGroupIterable(handlesForRocksDB3, 2_500_000, 5_000_000);
+			SimpleKeyGroupIterable keyGroupIterable4 = new SimpleKeyGroupIterable(handlesForRocksDB3, 5_000_000, 7_500_000);
+			SimpleKeyGroupIterable keyGroupIterable5 = new SimpleKeyGroupIterable(handlesForRocksDB3, 7_500_000, 10_000_000);
+
 			// with parallelism 2
 			SstFileBuilder sstFileBuilder2 = new SstFileBuilder(
 				tempFolder.newFolder().getAbsolutePath(),
-				64_1024_1024L,
+				64 * 1024 * 1024,
 				executorService,
 				new SimpleSstHandle(rocksDB3));
 
 			SstFileBuilder sstFileBuilder3 = new SstFileBuilder(
 				tempFolder.newFolder().getAbsolutePath(),
-				64_1024_1024L,
+				64 * 1024 * 1024,
+				executorService,
+				new SimpleSstHandle(rocksDB3));
+
+			SstFileBuilder sstFileBuilder4 = new SstFileBuilder(
+				tempFolder.newFolder().getAbsolutePath(),
+				64 * 1024 * 1024,
+				executorService,
+				new SimpleSstHandle(rocksDB3));
+
+			SstFileBuilder sstFileBuilder5 = new SstFileBuilder(
+				tempFolder.newFolder().getAbsolutePath(),
+				64 * 1024 * 1024,
 				executorService,
 				new SimpleSstHandle(rocksDB3));
 
@@ -203,12 +224,17 @@ public class SstFileBuilderTest {
 
 			CompletableFuture completableFuture2 = sstFileBuilder2.building(keyGroupIterable2);
 			CompletableFuture completableFuture3 = sstFileBuilder3.building(keyGroupIterable3);
+			CompletableFuture completableFuture4 = sstFileBuilder4.building(keyGroupIterable4);
+			CompletableFuture completableFuture5 = sstFileBuilder5.building(keyGroupIterable5);
 
 			completableFuture2.get();
 			completableFuture3.get();
+			completableFuture4.get();
+			completableFuture5.get();
+
 			long t6 = System.currentTimeMillis();
 
-			System.out.println("cost with parallelism 2:" + (t6 - t5));
+			System.out.println("cost with parallelism 4:" + (t6 - t5));
 			testHandleForRocksDB3.close();
 			rocksDB3.close();
 		}

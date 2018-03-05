@@ -132,10 +132,6 @@ public class SstFileBuilder {
 		private ByteBuffer keyByteBuffer;
 		private ByteBuffer valueByteBuffer;
 
-		private DirectSlice keySlice;
-
-		private DirectSlice valueSlice;
-
 		public SstFileWriterWrapper(
 			String basePath,
 			long sstFileSize,
@@ -159,8 +155,6 @@ public class SstFileBuilder {
 
 			keyByteBuffer = ByteBuffer.allocateDirect(4096);
 			valueByteBuffer = ByteBuffer.allocateDirect(4096);
-			keySlice = new DirectSlice(keyByteBuffer);
-			valueSlice = new DirectSlice(valueByteBuffer);
 		}
 
 		private String generateNewFile() throws IOException {
@@ -189,6 +183,7 @@ public class SstFileBuilder {
 				keyByteBuffer.clear();
 			} else {
 				keyByteBuffer = ByteBuffer.allocate(key.length);
+				keyByteBuffer.flip();
 			}
 			keyByteBuffer.put(key, 0, key.length);
 
@@ -196,6 +191,7 @@ public class SstFileBuilder {
 				valueByteBuffer.clear();
 			} else {
 				valueByteBuffer = ByteBuffer.allocate(value.length);
+				valueByteBuffer.flip();
 			}
 			valueByteBuffer.put(value, 0, value.length);
 
