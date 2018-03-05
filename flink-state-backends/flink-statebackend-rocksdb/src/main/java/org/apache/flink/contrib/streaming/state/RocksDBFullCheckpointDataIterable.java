@@ -26,41 +26,47 @@ import org.apache.flink.core.memory.DataInputViewStreamWrapper;
 import org.apache.flink.runtime.state.KeyGroupRange;
 import org.apache.flink.runtime.state.StreamCompressionDecorator;
 import org.apache.flink.util.CloseableIterable;
+import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.Preconditions;
 import org.rocksdb.ColumnFamilyHandle;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.util.Iterator;
 import java.util.List;
+import java.util.NoSuchElementException;
 
 /**
- * This class is not thread safe.
+ * Iterable class used by full checkpoint when performing restore, it's not thread safe.
  */
-public class RocksDBKeyGroupDataIterable implements CloseableIterable<Tuple3<ColumnFamilyHandle, byte[], byte[]>> {
+public class RocksDBFullCheckpointDataIterable implements CloseableIterable<Tuple3<ColumnFamilyHandle, byte[], byte[]>> {
+
+	private static final Logger LOG = LoggerFactory.getLogger(RocksDBFullCheckpointDataIterable.class);
+
 	private final FSDataInputStream stateHandleInStream;
 	private final KeyGroupRange targetKeyGroupRange;
 	private final Iterator<Tuple2<Integer, Long>> keyGroupOffsetIterator;
 	private final List<ColumnFamilyHandle> columnFamilies;
-	private final StreamCompressionDecorator keygroupStreamCompressionDecorator;
+	private final StreamCompressionDecorator keyGroupStreamCompressionDecorator;
 
 	private Tuple2<Integer, Long> currentKeyGroupOffset = null;
 	private boolean currentKeyGroupHasMoreKeys = true;
 	private ColumnFamilyHandle currentColumnFamilyHandle = null;
-	private boolean isNewKeyGroup = true;
 	private Tuple3<ColumnFamilyHandle, byte[], byte[]> nextItem = null;
 
-	public RocksDBKeyGroupDataIterable(FSDataInputStream stateHandleInStream,
-									   KeyGroupRange targetKeyGroupRange,
-									   Iterator<Tuple2<Integer, Long>> keyGroupOffsetIterator,
-									   List<ColumnFamilyHandle> columnFamilies,
-									   StreamCompressionDecorator keygroupStreamCompressionDecorator) {
+	public RocksDBFullCheckpointDataIterable(FSDataInputStream stateHandleInStream,
+											 KeyGroupRange targetKeyGroupRange,
+											 Iterator<Tuple2<Integer, Long>> keyGroupOffsetIterator,
+											 List<ColumnFamilyHandle> columnFamilies,
+											 StreamCompressionDecorator keygroupStreamCompressionDecorator) {
 
 		this.stateHandleInStream = stateHandleInStream;
 		this.targetKeyGroupRange = targetKeyGroupRange;
 		this.keyGroupOffsetIterator = keyGroupOffsetIterator;
 		this.columnFamilies = columnFamilies;
-		this.keygroupStreamCompressionDecorator = keygroupStreamCompressionDecorator;
+		this.keyGroupStreamCompressionDecorator = keygroupStreamCompressionDecorator;
 	}
 
 	@Override
@@ -72,35 +78,35 @@ public class RocksDBKeyGroupDataIterable implements CloseableIterable<Tuple3<Col
 			public boolean hasNext() {
 
 				if (nextItem != null) {
+					final boolean isNewKeyGroup;
 					try {
-						startNewKeyGroup();
+						isNewKeyGroup = startNewKeyGroup();
+					} catch (Exception ex) {
+						throw new FlinkRuntimeException("Failed to start new key group from state handle.", ex);
+					}
 
-						try (InputStream compressedKgIn = keygroupStreamCompressionDecorator.decorateWithCompression(stateHandleInStream)) {
-							DataInputViewStreamWrapper compressedKgInputView = new DataInputViewStreamWrapper(compressedKgIn);
+					try (InputStream compressedKgIn = keyGroupStreamCompressionDecorator.decorateWithCompression(stateHandleInStream)) {
+						DataInputViewStreamWrapper compressedKgInputView = new DataInputViewStreamWrapper(compressedKgIn);
 
-							byte[] key = BytePrimitiveArraySerializer.INSTANCE.deserialize(compressedKgInputView);
-							byte[] value = BytePrimitiveArraySerializer.INSTANCE.deserialize(compressedKgInputView);
+						byte[] key = BytePrimitiveArraySerializer.INSTANCE.deserialize(compressedKgInputView);
+						byte[] value = BytePrimitiveArraySerializer.INSTANCE.deserialize(compressedKgInputView);
 
-							if (isNewKeyGroup) {
-								int kvStateId = RocksDBKeyedStateBackend.RocksDBFullSnapshotOperation.END_OF_KEY_GROUP_MARK & compressedKgInputView.readShort();
+						if (isNewKeyGroup) {
+							int kvStateId = RocksDBKeyedStateBackend.RocksDBFullSnapshotOperation.END_OF_KEY_GROUP_MARK & compressedKgInputView.readShort();
+							currentColumnFamilyHandle = columnFamilies.get(kvStateId);
+						} else if (RocksDBKeyedStateBackend.RocksDBFullSnapshotOperation.hasMetaDataFollowsFlag(key)) {
+							//clear the signal bit in the key to make it ready for insertion again
+							RocksDBKeyedStateBackend.RocksDBFullSnapshotOperation.clearMetaDataFollowsFlag(key);
+							int kvStateId = RocksDBKeyedStateBackend.RocksDBFullSnapshotOperation.END_OF_KEY_GROUP_MARK & compressedKgInputView.readShort();
+							if (RocksDBKeyedStateBackend.RocksDBFullSnapshotOperation.END_OF_KEY_GROUP_MARK == kvStateId) {
+								currentKeyGroupHasMoreKeys = false;
+							} else {
 								currentColumnFamilyHandle = columnFamilies.get(kvStateId);
-								isNewKeyGroup = false;
-							} else if (RocksDBKeyedStateBackend.RocksDBFullSnapshotOperation.hasMetaDataFollowsFlag(key)) {
-								//clear the signal bit in the key to make it ready for insertion again
-								RocksDBKeyedStateBackend.RocksDBFullSnapshotOperation.clearMetaDataFollowsFlag(key);
-								int kvStateId = RocksDBKeyedStateBackend.RocksDBFullSnapshotOperation.END_OF_KEY_GROUP_MARK & compressedKgInputView.readShort();
-								if (RocksDBKeyedStateBackend.RocksDBFullSnapshotOperation.END_OF_KEY_GROUP_MARK == kvStateId) {
-									currentKeyGroupHasMoreKeys = false;
-								} else {
-									currentColumnFamilyHandle = columnFamilies.get(kvStateId);
-								}
 							}
-							nextItem = new Tuple3<>(currentColumnFamilyHandle, key, value);
-						} catch (Exception e) {
-
 						}
-					} catch (Exception e) {
-
+						nextItem = new Tuple3<>(currentColumnFamilyHandle, key, value);
+					} catch (Exception ex) {
+						throw new FlinkRuntimeException("Failed to get next element for this iterator.", ex);
 					}
 				}
 
@@ -110,7 +116,7 @@ public class RocksDBKeyGroupDataIterable implements CloseableIterable<Tuple3<Col
 			@Override
 			public Tuple3<ColumnFamilyHandle, byte[], byte[]> next() {
 				if (!hasNext()) {
-					throw new RuntimeException("");
+					throw new NoSuchElementException("No such element.");
 				}
 
 				Tuple3<ColumnFamilyHandle, byte[], byte[]> tmpNextItem = nextItem;
@@ -134,7 +140,6 @@ public class RocksDBKeyGroupDataIterable implements CloseableIterable<Tuple3<Col
 					//not empty key-group?
 					if (0L != offset) {
 						stateHandleInStream.seek(offset);
-						isNewKeyGroup = true;
 						currentKeyGroupHasMoreKeys = true;
 						return true;
 					}
@@ -146,5 +151,10 @@ public class RocksDBKeyGroupDataIterable implements CloseableIterable<Tuple3<Col
 
 	@Override
 	public void close() throws IOException {
+		try {
+			stateHandleInStream.close();
+		} catch (IOException ex) {
+			LOG.error("Failed to close the input stream. {}", ex);
+		}
 	}
 }

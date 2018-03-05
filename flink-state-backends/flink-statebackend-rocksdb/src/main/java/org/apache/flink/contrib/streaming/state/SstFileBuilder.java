@@ -20,6 +20,8 @@ package org.apache.flink.contrib.streaming.state;
 
 import org.apache.flink.api.java.tuple.Tuple3;
 import org.apache.flink.util.CloseableIterable;
+import org.apache.flink.util.FlinkRuntimeException;
+import org.apache.flink.util.Preconditions;
 import org.rocksdb.ColumnFamilyHandle;
 import org.rocksdb.EnvOptions;
 import org.rocksdb.Options;
@@ -28,6 +30,7 @@ import org.rocksdb.Slice;
 import org.rocksdb.SstFileWriter;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
@@ -41,7 +44,7 @@ import java.util.function.BiFunction;
  */
 public class SstFileBuilder {
 
-	private Map<ColumnFamilyHandle, FlinkSstFileWriter> writers = new HashMap<>(4);
+	private Map<ColumnFamilyHandle, SstFileWriterWrapper> writers = new HashMap<>(4);
 
 	private final ExecutorService executorService;
 	private CompletableFuture completableFuture;
@@ -63,38 +66,41 @@ public class SstFileBuilder {
 
 	public CompletableFuture building(CloseableIterable<Tuple3<ColumnFamilyHandle, byte[], byte[]>> iterable) {
 
-		assert completableFuture == null;
+		Preconditions.checkArgument(completableFuture == null, "CompletableFuture is not null.");
 
-		completableFuture = new CompletableFuture();
-
-		executorService.submit(() -> {
+		completableFuture = CompletableFuture.runAsync(() -> {
+			try {
 				try {
-					try {
-						Iterator<Tuple3<ColumnFamilyHandle, byte[], byte[]>> iterator = iterable.iterator();
-						while (iterator.hasNext()) {
-							Tuple3<ColumnFamilyHandle, byte[], byte[]> item = iterator.next();
-							ColumnFamilyHandle handle = item.f0;
-							byte[] key = item.f1;
-							byte[] value = item.f2;
+					Iterator<Tuple3<ColumnFamilyHandle, byte[], byte[]>> iterator = iterable.iterator();
+					while (iterator.hasNext()) {
+						Tuple3<ColumnFamilyHandle, byte[], byte[]> item = iterator.next();
+						ColumnFamilyHandle handle = item.f0;
+						byte[] key = item.f1;
+						byte[] value = item.f2;
 
-							addRecord(handle, key, value);
-						}
-					} finally {
-						iterable.close();
+						addRecord(handle, key, value);
 					}
-				} catch (Exception ex) {
-					completableFuture.completeExceptionally(ex);
+
+					for (SstFileWriterWrapper writerWrapper : writers.values()) {
+						writerWrapper.finish();
+					}
+				} finally {
+					iterable.close();
 				}
-		});
+			} catch (Exception ex) {
+				completableFuture.completeExceptionally(ex);
+			}
+		}, executorService);
 
 		return completableFuture;
 	}
 
-	void addRecord(ColumnFamilyHandle columnFamilyHandle, byte[] key, byte[] value) throws RocksDBException {
+	private void addRecord(ColumnFamilyHandle columnFamilyHandle, byte[] key, byte[] value)
+		throws RocksDBException, IOException {
 
-		FlinkSstFileWriter writer = writers.get(columnFamilyHandle);
+		SstFileWriterWrapper writer = writers.get(columnFamilyHandle);
 		if (writer == null) {
-			writer = new FlinkSstFileWriter(
+			writer = new SstFileWriterWrapper(
 				basePath,
 				sstFileSize,
 				columnFamilyHandle,
@@ -109,7 +115,7 @@ public class SstFileBuilder {
 	 * Helper class to generate sst file base on the {@link #sstFileSize},
 	 * once a sst file generated it invokes the {@link #onSstGeneratedHandler} to handle it.
 	 */
-	public static class FlinkSstFileWriter {
+	public static class SstFileWriterWrapper {
 
 		private final BiFunction<ColumnFamilyHandle, String, Boolean> onSstGeneratedHandler;
 		private final long sstFileSize;
@@ -118,64 +124,76 @@ public class SstFileBuilder {
 		private final String basePath;
 		private String currentFilePath;
 
-		// we perform a size check for every 10 records.
-		private static int SIZE_CHECK_INTERVAL = 100;
-		private int currentRecords;
+		private long currentSize = 0;
 
-		public FlinkSstFileWriter(
+		public SstFileWriterWrapper(
 			String basePath,
 			long sstFileSize,
 			ColumnFamilyHandle columnFamilyHandle,
-			BiFunction<ColumnFamilyHandle, String, Boolean> onSstGeneratedHandler) throws RocksDBException {
+			BiFunction<ColumnFamilyHandle, String, Boolean> onSstGeneratedHandler)
+			throws RocksDBException, IOException {
 			this.columnFamilyHandle = columnFamilyHandle;
 			this.sstFileSize = sstFileSize;
+
+			// init the base directory
 			this.basePath = basePath + "/" + UUID.randomUUID();
+			File baseDir = new File(this.basePath);
+			if (!baseDir.exists()) {
+				if (baseDir.mkdir()) {
+					//
+				}
+			}
+
 			this.onSstGeneratedHandler = onSstGeneratedHandler;
 			initWriter();
 		}
 
-		private String generateNewFile() {
+		private String generateNewFile() throws IOException {
 			int tries = 10;
 			while(tries > 0) {
 				String tmpFilePath = basePath + "/" + UUID.randomUUID().toString() + ".sst";
-				if (!new File(tmpFilePath).exists()) {
+				File tmpFile = new File(tmpFilePath);
+				if (!tmpFile.exists()) {
+					tmpFile.createNewFile();
 					return tmpFilePath;
 				}
 			}
 			throw new RuntimeException("Failed to generate new sst file.");
 		}
 
-		private void initWriter() throws RocksDBException {
+		private void initWriter() throws RocksDBException, IOException {
 			this.writer = new SstFileWriter(new EnvOptions(), new Options());
 			this.currentFilePath = generateNewFile();
 			this.writer.open(this.currentFilePath);
 		}
 
-		private boolean needToFinish() {
-			File file = new File(this.currentFilePath);
-			long length = file.length();
-			if (length >= sstFileSize) {
-				return true;
-			}
-			return false;
-		}
-
-		public void addRecord(byte[] key, byte[] value) throws RocksDBException {
+		public void addRecord(byte[] key, byte[] value) throws RocksDBException, IOException {
 
 			writer.put(new Slice(key), new Slice(value));
 
-			if ((++currentRecords % SIZE_CHECK_INTERVAL) == 0) {
-				if (needToFinish()) {
-					writer.finish();
-					writer.close();
+			currentSize += key.length + value.length;
 
-					// handle the generated sst file
-					if (!onSstGeneratedHandler.apply(this.columnFamilyHandle, this.currentFilePath)) {
-						throw new RuntimeException("");
-					}
+			if (currentSize >= sstFileSize) {
+				writer.finish();
+				writer.close();
 
-					this.currentRecords = 0;
-					initWriter();
+				// handle the generated sst file
+				if (!onSstGeneratedHandler.apply(this.columnFamilyHandle, this.currentFilePath)) {
+					throw new FlinkRuntimeException("Failed to handle sst file.");
+				}
+
+				this.currentSize = 0;
+				initWriter();
+			}
+		}
+
+		public void finish() throws RocksDBException {
+			if (currentSize > 0) {
+				writer.finish();
+				writer.close();
+
+				if (!onSstGeneratedHandler.apply(this.columnFamilyHandle, this.currentFilePath)) {
+					throw new FlinkRuntimeException("Failed to handle sst file.");
 				}
 			}
 		}

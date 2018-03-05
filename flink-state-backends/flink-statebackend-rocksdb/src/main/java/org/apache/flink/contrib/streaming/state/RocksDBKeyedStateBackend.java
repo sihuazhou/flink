@@ -109,9 +109,9 @@ import org.slf4j.LoggerFactory;
 
 import javax.annotation.Nonnull;
 
+import java.io.Closeable;
 import java.io.File;
 import java.io.IOException;
-import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
@@ -521,7 +521,7 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 	 */
 	private static final class RocksDBFullRestoreOperation<K> {
 
-		private final static int PARALLELISM = 4;
+		private final static int DEAFULT_PARALLELISM = 4;
 
 		private final RocksDBKeyedStateBackend<K> rocksDBKeyedStateBackend;
 
@@ -537,7 +537,7 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 		private StreamCompressionDecorator keygroupStreamCompressionDecorator;
 
 		/** Executor for restoring in parallel. */
-		private ExecutorService executorService = Executors.newFixedThreadPool(PARALLELISM);
+		private ExecutorService executorService = Executors.newFixedThreadPool(DEAFULT_PARALLELISM);
 
 		/** base path for restoring. */
 		private String restoreBasePath;
@@ -712,7 +712,7 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 //				}
 //			}
 //		}
-
+//
 //		/**
 //		 * Restores all key-groups data that is referenced by the passed state handles in parallel.
 //		 */
@@ -763,11 +763,11 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 
 			int endKeyGroup = totalKeyGroupRangeOffsets.getKeyGroupRange().getEndKeyGroup();
 
-			List<KeyGroupRangeOffsets> subKeyGroupRangeOffsetsList = new ArrayList<>(PARALLELISM);
+			List<KeyGroupRangeOffsets> subKeyGroupRangeOffsetsList = new ArrayList<>(DEAFULT_PARALLELISM);
 
 			int totalNumberKeyGroups = totalKeyGroupRangeOffsets.getKeyGroupRange().getNumberOfKeyGroups();
 
-			int keyGroupsPerParallel = totalNumberKeyGroups / PARALLELISM;
+			int keyGroupsPerParallel = totalNumberKeyGroups / DEAFULT_PARALLELISM;
 
 			Tuple2<Integer, Long> firstKeyGroup = iterator.next();
 
@@ -795,28 +795,35 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 
 			List<KeyGroupRangeOffsets> subKeyGroupRangeOffsetsList = getSubKeyGroupRangeOffsets();
 
-			List<CompletableFuture> completableFutures = new ArrayList<>(PARALLELISM);
+			List<CompletableFuture> completableFutures = new ArrayList<>(DEAFULT_PARALLELISM);
+
+			List<Closeable> keyGroupDataIteratorList = new ArrayList<>(DEAFULT_PARALLELISM);
+
+			KeyGroupRange targetKeyGroupRange = rocksDBKeyedStateBackend.getKeyGroupRange();
+
 			for (KeyGroupRangeOffsets subKeyGroupRangeOffsets : subKeyGroupRangeOffsetsList) {
 
-				FSDataInputStream stateHandleInStream = currentKeyGroupsStateHandle.openInputStream();
-
-				RocksDBKeyGroupDataIterable rocksDBKeyGroupDataIterator = new RocksDBKeyGroupDataIterable(
-					stateHandleInStream,
-					rocksDBKeyedStateBackend.getKeyGroupRange(),
+				RocksDBFullCheckpointDataIterable rocksDBKeyGroupDataIterator = new RocksDBFullCheckpointDataIterable(
+					currentKeyGroupsStateHandle.openInputStream(),
+					targetKeyGroupRange,
 					subKeyGroupRangeOffsets.iterator(),
 					currentStateHandleKVStateColumnFamilies,
 					keygroupStreamCompressionDecorator
 				);
 
+				// register closeable
+				rocksDBKeyedStateBackend.cancelStreamRegistry.registerCloseable(rocksDBKeyGroupDataIterator);
+				keyGroupDataIteratorList.add(rocksDBKeyGroupDataIterator);
+
 				SstFileBuilder builder = new SstFileBuilder(
 					restoreBasePath,
 					rocksDBKeyedStateBackend.columnOptions.targetFileSizeBase(),
 					executorService,
-					(handle, path) -> {
+					(ColumnFamilyHandle handle, String generatedSstPath) -> {
 						try {
 							rocksDBKeyedStateBackend.db.ingestExternalFile(
 								handle,
-								Collections.singletonList(path),
+								Collections.singletonList(generatedSstPath),
 								new IngestExternalFileOptions(true, true, true, true));
 						} catch (Exception ex) {
 							LOG.error("Failed to ingest external file : {}", ex);
@@ -831,6 +838,12 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 			// wait until completed.
 			for (CompletableFuture completableFuture : completableFutures) {
 				completableFuture.get();
+			}
+
+			// unregister the closeable
+			for (Closeable rocksDBIterator : keyGroupDataIteratorList) {
+				rocksDBIterator.close();
+				rocksDBKeyedStateBackend.cancelStreamRegistry.unregisterCloseable(rocksDBIterator);
 			}
 		}
 	}
