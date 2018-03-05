@@ -97,6 +97,7 @@ import org.rocksdb.ColumnFamilyDescriptor;
 import org.rocksdb.ColumnFamilyHandle;
 import org.rocksdb.ColumnFamilyOptions;
 import org.rocksdb.DBOptions;
+import org.rocksdb.IngestExternalFileOptions;
 import org.rocksdb.ReadOptions;
 import org.rocksdb.RocksDB;
 import org.rocksdb.RocksDBException;
@@ -133,6 +134,10 @@ import java.util.Spliterator;
 import java.util.Spliterators;
 import java.util.TreeMap;
 import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.RunnableFuture;
 import java.util.stream.Stream;
@@ -473,7 +478,7 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 		}
 	}
 
-	private void createDB() throws IOException {
+	protected void createDB() throws IOException {
 		List<ColumnFamilyHandle> columnFamilyHandles = new ArrayList<>(1);
 		this.db = openDB(instanceRocksDBPath.getAbsolutePath(), Collections.emptyList(), columnFamilyHandles);
 		this.defaultColumnFamily = columnFamilyHandles.get(0);
@@ -516,6 +521,8 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 	 */
 	private static final class RocksDBFullRestoreOperation<K> {
 
+		private final static int PARALLELISM = 4;
+
 		private final RocksDBKeyedStateBackend<K> rocksDBKeyedStateBackend;
 
 		/** Current key-groups state handle from which we restore key-groups. */
@@ -529,6 +536,12 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 		/** The compression decorator that was used for writing the state, as determined by the meta data. */
 		private StreamCompressionDecorator keygroupStreamCompressionDecorator;
 
+		/** Executor for restoring in parallel. */
+		private ExecutorService executorService = Executors.newFixedThreadPool(PARALLELISM);
+
+		/** base path for restoring. */
+		private String restoreBasePath;
+
 		/**
 		 * Creates a restore operation object for the given state backend instance.
 		 *
@@ -536,15 +549,17 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 		 */
 		public RocksDBFullRestoreOperation(RocksDBKeyedStateBackend<K> rocksDBKeyedStateBackend) {
 			this.rocksDBKeyedStateBackend = Preconditions.checkNotNull(rocksDBKeyedStateBackend);
+
+			restoreBasePath = rocksDBKeyedStateBackend.instanceBasePath.getAbsolutePath() + "/restore";
 		}
 
 		/**
-		 * Restores all key-groups data that is referenced by the passed state handles.
+		 * Restores all key-groups data that is referenced by the passed state handles in parallel.
 		 *
 		 * @param keyedStateHandles List of all key groups state handles that shall be restored.
 		 */
 		public void doRestore(Collection<KeyedStateHandle> keyedStateHandles)
-			throws IOException, StateMigrationException, RocksDBException {
+			throws IOException, StateMigrationException, RocksDBException, ExecutionException, InterruptedException {
 
 			rocksDBKeyedStateBackend.createDB();
 
@@ -557,28 +572,28 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 							", but found: " + keyedStateHandle.getClass());
 					}
 					this.currentKeyGroupsStateHandle = (KeyGroupsStateHandle) keyedStateHandle;
-					restoreKeyGroupsInStateHandle();
+					restoreKeyGroupsInStateHandleParallel();
 				}
 			}
 		}
 
-		/**
-		 * Restore one key groups state handle.
-		 */
-		private void restoreKeyGroupsInStateHandle()
-			throws IOException, StateMigrationException, RocksDBException {
-			try {
-				currentStateHandleInStream = currentKeyGroupsStateHandle.openInputStream();
-				rocksDBKeyedStateBackend.cancelStreamRegistry.registerCloseable(currentStateHandleInStream);
-				currentStateHandleInView = new DataInputViewStreamWrapper(currentStateHandleInStream);
-				restoreKVStateMetaData();
-				restoreKVStateData();
-			} finally {
-				if (rocksDBKeyedStateBackend.cancelStreamRegistry.unregisterCloseable(currentStateHandleInStream)) {
-					IOUtils.closeQuietly(currentStateHandleInStream);
-				}
-			}
-		}
+//		/**
+//		 * Restore one key groups state handle.
+//		 */
+//		private void restoreKeyGroupsInStateHandle()
+//			throws IOException, StateMigrationException, RocksDBException {
+//			try {
+//				currentStateHandleInStream = currentKeyGroupsStateHandle.openInputStream();
+//				rocksDBKeyedStateBackend.cancelStreamRegistry.registerCloseable(currentStateHandleInStream);
+//				currentStateHandleInView = new DataInputViewStreamWrapper(currentStateHandleInStream);
+//				restoreKVStateMetaData();
+//				restoreKVStateData();
+//			} finally {
+//				if (rocksDBKeyedStateBackend.cancelStreamRegistry.unregisterCloseable(currentStateHandleInStream)) {
+//					IOUtils.closeQuietly(currentStateHandleInStream);
+//				}
+//			}
+//		}
 
 		/**
 		 * Restore the KV-state / ColumnFamily meta data for all key-groups referenced by the current state handle.
@@ -648,53 +663,174 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 			}
 		}
 
-		/**
-		 * Restore the KV-state / ColumnFamily data for all key-groups referenced by the current state handle.
-		 *
-		 * @throws IOException
-		 * @throws RocksDBException
-		 */
-		private void restoreKVStateData() throws IOException, RocksDBException {
-			//for all key-groups in the current state handle...
-			for (Tuple2<Integer, Long> keyGroupOffset : currentKeyGroupsStateHandle.getGroupRangeOffsets()) {
-				int keyGroup = keyGroupOffset.f0;
+//		/**
+//		 * Restore the KV-state / ColumnFamily data for all key-groups referenced by the current state handle.
+//		 *
+//		 * @throws IOException
+//		 * @throws RocksDBException
+//		 */
+//		private void restoreKVStateData() throws IOException, RocksDBException {
+//			//for all key-groups in the current state handle...
+//			for (Tuple2<Integer, Long> keyGroupOffset : currentKeyGroupsStateHandle.getGroupRangeOffsets()) {
+//				int keyGroup = keyGroupOffset.f0;
+//
+//				// Check that restored key groups all belong to the backend
+//				Preconditions.checkState(rocksDBKeyedStateBackend.getKeyGroupRange().contains(keyGroup),
+//					"The key group must belong to the backend");
+//
+//				long offset = keyGroupOffset.f1;
+//				//not empty key-group?
+//				if (0L != offset) {
+//					currentStateHandleInStream.seek(offset);
+//					try (InputStream compressedKgIn = keygroupStreamCompressionDecorator.decorateWithCompression(currentStateHandleInStream)) {
+//						DataInputViewStreamWrapper compressedKgInputView = new DataInputViewStreamWrapper(compressedKgIn);
+//						//TODO this could be aware of keyGroupPrefixBytes and write only one byte if possible
+//						int kvStateId = compressedKgInputView.readShort();
+//						ColumnFamilyHandle handle = currentStateHandleKVStateColumnFamilies.get(kvStateId);
+//						//insert all k/v pairs into DB
+//						boolean keyGroupHasMoreKeys = true;
+//						while (keyGroupHasMoreKeys) {
+//							byte[] key = BytePrimitiveArraySerializer.INSTANCE.deserialize(compressedKgInputView);
+//							byte[] value = BytePrimitiveArraySerializer.INSTANCE.deserialize(compressedKgInputView);
+//							if (RocksDBFullSnapshotOperation.hasMetaDataFollowsFlag(key)) {
+//								//clear the signal bit in the key to make it ready for insertion again
+//								RocksDBFullSnapshotOperation.clearMetaDataFollowsFlag(key);
+//								rocksDBKeyedStateBackend.db.put(handle, key, value);
+//								//TODO this could be aware of keyGroupPrefixBytes and write only one byte if possible
+//								kvStateId = RocksDBFullSnapshotOperation.END_OF_KEY_GROUP_MARK
+//									& compressedKgInputView.readShort();
+//								if (RocksDBFullSnapshotOperation.END_OF_KEY_GROUP_MARK == kvStateId) {
+//									keyGroupHasMoreKeys = false;
+//								} else {
+//									handle = currentStateHandleKVStateColumnFamilies.get(kvStateId);
+//								}
+//							} else {
+//								rocksDBKeyedStateBackend.db.put(handle, key, value);
+//							}
+//						}
+//					}
+//				}
+//			}
+//		}
 
-				// Check that restored key groups all belong to the backend
-				Preconditions.checkState(rocksDBKeyedStateBackend.getKeyGroupRange().contains(keyGroup),
-					"The key group must belong to the backend");
+//		/**
+//		 * Restores all key-groups data that is referenced by the passed state handles in parallel.
+//		 */
+//		public void doRestoreParallel(Collection<KeyedStateHandle> keyedStateHandles)
+//			throws IOException, StateMigrationException, RocksDBException, ExecutionException, InterruptedException {
+//
+//			rocksDBKeyedStateBackend.createDB();
+//
+//			for (KeyedStateHandle keyedStateHandle : keyedStateHandles) {
+//				if (keyedStateHandle != null) {
+//
+//					if (!(keyedStateHandle instanceof KeyGroupsStateHandle)) {
+//						throw new IllegalStateException("Unexpected state handle type, " +
+//							"expected: " + KeyGroupsStateHandle.class +
+//							", but found: " + keyedStateHandle.getClass());
+//					}
+//
+//					this.currentKeyGroupsStateHandle = (KeyGroupsStateHandle) keyedStateHandle;
+//					restoreKeyGroupsInStateHandleParallel();
+//				}
+//			}
+//		}
 
-				long offset = keyGroupOffset.f1;
-				//not empty key-group?
-				if (0L != offset) {
-					currentStateHandleInStream.seek(offset);
-					try (InputStream compressedKgIn = keygroupStreamCompressionDecorator.decorateWithCompression(currentStateHandleInStream)) {
-						DataInputViewStreamWrapper compressedKgInputView = new DataInputViewStreamWrapper(compressedKgIn);
-						//TODO this could be aware of keyGroupPrefixBytes and write only one byte if possible
-						int kvStateId = compressedKgInputView.readShort();
-						ColumnFamilyHandle handle = currentStateHandleKVStateColumnFamilies.get(kvStateId);
-						//insert all k/v pairs into DB
-						boolean keyGroupHasMoreKeys = true;
-						while (keyGroupHasMoreKeys) {
-							byte[] key = BytePrimitiveArraySerializer.INSTANCE.deserialize(compressedKgInputView);
-							byte[] value = BytePrimitiveArraySerializer.INSTANCE.deserialize(compressedKgInputView);
-							if (RocksDBFullSnapshotOperation.hasMetaDataFollowsFlag(key)) {
-								//clear the signal bit in the key to make it ready for insertion again
-								RocksDBFullSnapshotOperation.clearMetaDataFollowsFlag(key);
-								rocksDBKeyedStateBackend.db.put(handle, key, value);
-								//TODO this could be aware of keyGroupPrefixBytes and write only one byte if possible
-								kvStateId = RocksDBFullSnapshotOperation.END_OF_KEY_GROUP_MARK
-									& compressedKgInputView.readShort();
-								if (RocksDBFullSnapshotOperation.END_OF_KEY_GROUP_MARK == kvStateId) {
-									keyGroupHasMoreKeys = false;
-								} else {
-									handle = currentStateHandleKVStateColumnFamilies.get(kvStateId);
-								}
-							} else {
-								rocksDBKeyedStateBackend.db.put(handle, key, value);
-							}
-						}
-					}
+		private void restoreKeyGroupsInStateHandleParallel()
+			throws IOException, StateMigrationException, RocksDBException, ExecutionException, InterruptedException {
+
+			try {
+				currentStateHandleInStream = currentKeyGroupsStateHandle.openInputStream();
+				rocksDBKeyedStateBackend.cancelStreamRegistry.registerCloseable(currentStateHandleInStream);
+				currentStateHandleInView = new DataInputViewStreamWrapper(currentStateHandleInStream);
+				restoreKVStateMetaData();
+				restoreKVStateDataParallel();
+			} finally {
+				if (rocksDBKeyedStateBackend.cancelStreamRegistry.unregisterCloseable(currentStateHandleInStream)) {
+					IOUtils.closeQuietly(currentStateHandleInStream);
 				}
+			}
+		}
+
+		private List<KeyGroupRangeOffsets> getSubKeyGroupRangeOffsets() {
+
+			KeyGroupRangeOffsets totalKeyGroupRangeOffsets
+				= currentKeyGroupsStateHandle.getGroupRangeOffsets();
+
+			Iterator<Tuple2<Integer, Long>> iterator = totalKeyGroupRangeOffsets.iterator();
+
+			Preconditions.checkArgument(iterator.hasNext(), "Empty key group range.");
+
+			int endKeyGroup = totalKeyGroupRangeOffsets.getKeyGroupRange().getEndKeyGroup();
+
+			List<KeyGroupRangeOffsets> subKeyGroupRangeOffsetsList = new ArrayList<>(PARALLELISM);
+
+			int totalNumberKeyGroups = totalKeyGroupRangeOffsets.getKeyGroupRange().getNumberOfKeyGroups();
+
+			int keyGroupsPerParallel = totalNumberKeyGroups / PARALLELISM;
+
+			Tuple2<Integer, Long> firstKeyGroup = iterator.next();
+
+			KeyGroupRangeOffsets keyGroupRangeOffsets = new KeyGroupRangeOffsets(firstKeyGroup.f0,
+				firstKeyGroup.f0 + keyGroupsPerParallel < endKeyGroup ? firstKeyGroup.f0 + keyGroupsPerParallel : endKeyGroup);
+
+			while (iterator.hasNext()) {
+
+				Tuple2<Integer, Long> keyGroupOffset = iterator.next();
+
+				if (keyGroupRangeOffsets.getKeyGroupRange().getEndKeyGroup() >= keyGroupOffset.f0) {
+					keyGroupRangeOffsets.setKeyGroupOffset(keyGroupOffset.f0, keyGroupOffset.f1);
+				} else {
+					subKeyGroupRangeOffsetsList.add(keyGroupRangeOffsets);
+					keyGroupRangeOffsets = new KeyGroupRangeOffsets(keyGroupOffset.f0,
+						keyGroupOffset.f0 + keyGroupsPerParallel < endKeyGroup ? keyGroupOffset.f0 + keyGroupsPerParallel : endKeyGroup);
+				}
+			}
+
+			return subKeyGroupRangeOffsetsList;
+		}
+
+		private void restoreKVStateDataParallel()
+			throws ExecutionException, InterruptedException, IOException {
+
+			List<KeyGroupRangeOffsets> subKeyGroupRangeOffsetsList = getSubKeyGroupRangeOffsets();
+
+			List<CompletableFuture> completableFutures = new ArrayList<>(PARALLELISM);
+			for (KeyGroupRangeOffsets subKeyGroupRangeOffsets : subKeyGroupRangeOffsetsList) {
+
+				FSDataInputStream stateHandleInStream = currentKeyGroupsStateHandle.openInputStream();
+
+				RocksDBKeyGroupDataIterable rocksDBKeyGroupDataIterator = new RocksDBKeyGroupDataIterable(
+					stateHandleInStream,
+					rocksDBKeyedStateBackend.getKeyGroupRange(),
+					subKeyGroupRangeOffsets.iterator(),
+					currentStateHandleKVStateColumnFamilies,
+					keygroupStreamCompressionDecorator
+				);
+
+				SstFileBuilder builder = new SstFileBuilder(
+					restoreBasePath,
+					rocksDBKeyedStateBackend.columnOptions.targetFileSizeBase(),
+					executorService,
+					(handle, path) -> {
+						try {
+							rocksDBKeyedStateBackend.db.ingestExternalFile(
+								handle,
+								Collections.singletonList(path),
+								new IngestExternalFileOptions(true, true, true, true));
+						} catch (Exception ex) {
+							LOG.error("Failed to ingest external file : {}", ex);
+							return false;
+						}
+						return true;
+					});
+
+				completableFutures.add(builder.building(rocksDBKeyGroupDataIterator));
+			}
+
+			// wait until completed.
+			for (CompletableFuture completableFuture : completableFutures) {
+				completableFuture.get();
 			}
 		}
 	}

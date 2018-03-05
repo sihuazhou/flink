@@ -19,6 +19,7 @@
 package org.apache.flink.contrib.streaming.state;
 
 import org.apache.flink.api.java.tuple.Tuple3;
+import org.apache.flink.util.CloseableIterable;
 import org.rocksdb.ColumnFamilyHandle;
 import org.rocksdb.EnvOptions;
 import org.rocksdb.Options;
@@ -38,29 +39,29 @@ import java.util.function.BiFunction;
 /**
  * Class to build sst files from the iterator.
  */
-public class FlinkSstFileBuilder {
+public class SstFileBuilder {
 
 	private Map<ColumnFamilyHandle, FlinkSstFileWriter> writers = new HashMap<>(4);
 
 	private final ExecutorService executorService;
 	private CompletableFuture completableFuture;
-	private final int sstFileSize;
-	private final String[] basePaths;
+	private final long sstFileSize;
+	private final String basePath;
 
 	private final BiFunction<ColumnFamilyHandle, String, Boolean> onSstGeneratedHandler;
 
-	public FlinkSstFileBuilder(
-		String[] basePaths,
-		int sstFileSize,
+	public SstFileBuilder(
+		String basePath,
+		long sstFileSize,
 		ExecutorService executorService,
 		BiFunction<ColumnFamilyHandle, String, Boolean> onSstGeneratedHandler) {
 		this.sstFileSize = sstFileSize;
 		this.executorService = executorService;
-		this.basePaths = basePaths;
+		this.basePath = basePath;
 		this.onSstGeneratedHandler = onSstGeneratedHandler;
 	}
 
-	public CompletableFuture building(Iterator<Tuple3<ColumnFamilyHandle, byte[], byte[]>> iterator) {
+	public CompletableFuture building(CloseableIterable<Tuple3<ColumnFamilyHandle, byte[], byte[]>> iterable) {
 
 		assert completableFuture == null;
 
@@ -68,14 +69,18 @@ public class FlinkSstFileBuilder {
 
 		executorService.submit(() -> {
 				try {
-					while (iterator.hasNext()) {
-						Tuple3<ColumnFamilyHandle, byte[], byte[]> item = iterator.next();
-						ColumnFamilyHandle handle = item.f0;
-						byte[] key = item.f1;
-						byte[] value = item.f2;
+					try {
+						Iterator<Tuple3<ColumnFamilyHandle, byte[], byte[]>> iterator = iterable.iterator();
+						while (iterator.hasNext()) {
+							Tuple3<ColumnFamilyHandle, byte[], byte[]> item = iterator.next();
+							ColumnFamilyHandle handle = item.f0;
+							byte[] key = item.f1;
+							byte[] value = item.f2;
 
-						addRecord(handle, key, value);
-
+							addRecord(handle, key, value);
+						}
+					} finally {
+						iterable.close();
 					}
 				} catch (Exception ex) {
 					completableFuture.completeExceptionally(ex);
@@ -90,7 +95,7 @@ public class FlinkSstFileBuilder {
 		FlinkSstFileWriter writer = writers.get(columnFamilyHandle);
 		if (writer == null) {
 			writer = new FlinkSstFileWriter(
-				"",
+				basePath,
 				sstFileSize,
 				columnFamilyHandle,
 				onSstGeneratedHandler);
@@ -124,14 +129,14 @@ public class FlinkSstFileBuilder {
 			BiFunction<ColumnFamilyHandle, String, Boolean> onSstGeneratedHandler) throws RocksDBException {
 			this.columnFamilyHandle = columnFamilyHandle;
 			this.sstFileSize = sstFileSize;
-			this.basePath = basePath + "/sstFileWriter/" + UUID.randomUUID();
+			this.basePath = basePath + "/" + UUID.randomUUID();
 			this.onSstGeneratedHandler = onSstGeneratedHandler;
 			initWriter();
 		}
 
 		private String generateNewFile() {
-			int trys = 10;
-			while(trys > 0) {
+			int tries = 10;
+			while(tries > 0) {
 				String tmpFilePath = basePath + "/" + UUID.randomUUID().toString() + ".sst";
 				if (!new File(tmpFilePath).exists()) {
 					return tmpFilePath;
@@ -173,10 +178,6 @@ public class FlinkSstFileBuilder {
 					initWriter();
 				}
 			}
-		}
-
-		public void dispose() {
-			//clean up
 		}
 	}
 }
