@@ -23,14 +23,17 @@ import org.apache.flink.util.CloseableIterable;
 import org.apache.flink.util.FlinkRuntimeException;
 import org.apache.flink.util.Preconditions;
 import org.rocksdb.ColumnFamilyHandle;
+import org.rocksdb.DirectSlice;
 import org.rocksdb.EnvOptions;
 import org.rocksdb.Options;
 import org.rocksdb.RocksDBException;
 import org.rocksdb.Slice;
 import org.rocksdb.SstFileWriter;
+import scala.Array;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
@@ -126,6 +129,13 @@ public class SstFileBuilder {
 
 		private long currentSize = 0;
 
+		private ByteBuffer keyByteBuffer;
+		private ByteBuffer valueByteBuffer;
+
+		private DirectSlice keySlice;
+
+		private DirectSlice valueSlice;
+
 		public SstFileWriterWrapper(
 			String basePath,
 			long sstFileSize,
@@ -146,6 +156,11 @@ public class SstFileBuilder {
 
 			this.onSstGeneratedHandler = onSstGeneratedHandler;
 			initWriter();
+
+			keyByteBuffer = ByteBuffer.allocateDirect(4096);
+			valueByteBuffer = ByteBuffer.allocateDirect(4096);
+			keySlice = new DirectSlice(keyByteBuffer);
+			valueSlice = new DirectSlice(valueByteBuffer);
 		}
 
 		private String generateNewFile() throws IOException {
@@ -162,6 +177,7 @@ public class SstFileBuilder {
 		}
 
 		private void initWriter() throws RocksDBException, IOException {
+
 			this.writer = new SstFileWriter(new EnvOptions(), new Options());
 			this.currentFilePath = generateNewFile();
 			this.writer.open(this.currentFilePath);
@@ -169,7 +185,21 @@ public class SstFileBuilder {
 
 		public void addRecord(byte[] key, byte[] value) throws RocksDBException, IOException {
 
-			writer.put(new Slice(key), new Slice(value));
+			if (keyByteBuffer.capacity() >= key.length) {
+				keyByteBuffer.clear();
+			} else {
+				keyByteBuffer = ByteBuffer.allocate(key.length);
+			}
+			keyByteBuffer.put(key, 0, key.length);
+
+			if (valueByteBuffer.capacity() >= value.length) {
+				valueByteBuffer.clear();
+			} else {
+				valueByteBuffer = ByteBuffer.allocate(value.length);
+			}
+			valueByteBuffer.put(value, 0, value.length);
+
+			writer.put(new DirectSlice(keyByteBuffer, key.length), new DirectSlice(valueByteBuffer, value.length));
 
 			currentSize += key.length + value.length;
 

@@ -18,9 +18,36 @@
 
 package org.apache.flink.contrib.streaming.state;
 
+import org.apache.flink.runtime.state.KeyGroupRange;
+import org.apache.flink.runtime.state.UncompressedStreamCompressionDecorator;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
+import org.rocksdb.ColumnFamilyDescriptor;
+import org.rocksdb.RocksDB;
+
+import java.util.Collections;
+
 /**
  * Tests to guard {@link RocksDBFullCheckpointDataIterable}.
  */
 public class RocksDBFullCheckpointDataIterableTest {
+
+	@Rule
+	public final TemporaryFolder tempFolder = new TemporaryFolder();
+
+	@Test
+	public void basicTest() throws Exception {
+
+		RocksDB rocksDB = RocksDB.open(tempFolder.newFolder().getAbsolutePath());
+
+		RocksDBFullCheckpointDataIterable iterable = new RocksDBFullCheckpointDataIterable(
+			null,
+			new KeyGroupRange(0, 1),
+			null,
+			Collections.EMPTY_LIST,
+			new UncompressedStreamCompressionDecorator());
+	}
+
 
 }
