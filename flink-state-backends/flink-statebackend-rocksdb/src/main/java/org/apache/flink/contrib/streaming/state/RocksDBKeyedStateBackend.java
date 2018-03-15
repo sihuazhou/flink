@@ -803,7 +803,7 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 
 			for (KeyedStateHandle rawStateHandle : restoreStateHandles) {
 
-				if (!(rawStateHandle instanceof IncrementalLocalKeyedStateHandle)) {
+				if (!(rawStateHandle instanceof IncrementalKeyedStateHandle)) {
 					throw new IllegalStateException("Unexpected state handle type, " +
 						"expected " + IncrementalKeyedStateHandle.class +
 						", but found " + rawStateHandle.getClass());
