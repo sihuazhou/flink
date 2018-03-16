@@ -1932,7 +1932,7 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 		private final ResourceGuard.Lease dbLease;
 
 		private Snapshot snapshot;
-//		private ReadOptions readOptions;
+		private ReadOptions readOptions;
 		private List<Tuple2<ColumnFamilyHandle, RegisteredKeyedBackendStateMetaInfo<?, ?>>> kvStateInformationCopy;
 		private List<Tuple2<RocksIterator, Integer>> kvStateIterators;
 
@@ -2033,10 +2033,10 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 				snapshot = null;
 			}
 
-//			if (null != readOptions) {
-//				IOUtils.closeQuietly(readOptions);
-//				readOptions = null;
-//			}
+			if (null != readOptions) {
+				IOUtils.closeQuietly(readOptions);
+				readOptions = null;
+			}
 
 			this.dbLease.close();
 		}
@@ -2051,19 +2051,18 @@ public class RocksDBKeyedStateBackend<K> extends AbstractKeyedStateBackend<K> {
 			int kvStateId = 0;
 
 			//retrieve iterator for this k/v states
-			try (ReadOptions readOptions = new ReadOptions()) {
-				readOptions.setSnapshot(snapshot);
+			readOptions = new ReadOptions();
+			readOptions.setSnapshot(snapshot);
 
-				for (Tuple2<ColumnFamilyHandle, RegisteredKeyedBackendStateMetaInfo<?, ?>> column :
-					kvStateInformationCopy) {
+			for (Tuple2<ColumnFamilyHandle, RegisteredKeyedBackendStateMetaInfo<?, ?>> column :
+				kvStateInformationCopy) {
 
-					metaInfoSnapshots.add(column.f1.snapshot());
+				metaInfoSnapshots.add(column.f1.snapshot());
 
-					kvStateIterators.add(
-						new Tuple2<>(stateBackend.db.newIterator(column.f0, readOptions), kvStateId));
+				kvStateIterators.add(
+					new Tuple2<>(stateBackend.db.newIterator(column.f0, readOptions), kvStateId));
 
-					++kvStateId;
-				}
+				++kvStateId;
 			}
 
 			KeyedBackendSerializationProxy<K> serializationProxy =
