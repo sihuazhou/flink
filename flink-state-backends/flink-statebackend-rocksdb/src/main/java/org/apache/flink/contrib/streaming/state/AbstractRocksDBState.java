@@ -34,6 +34,7 @@ import org.rocksdb.RocksDBException;
 import org.rocksdb.WriteOptions;
 
 import java.io.IOException;
+import java.util.Collection;
 
 /**
  * Base class for {@link State} implementations that store state in a RocksDB database.
@@ -147,6 +148,47 @@ public abstract class AbstractRocksDBState<K, N, V, S extends State, SD extends 
 
 		return backend.db.get(columnFamily, tmpKeySerializationStream.toByteArray());
 	}
+
+	// ---------------------------------------------------------------------------------
+
+	@Override
+	public Collection<Tuple2<byte[], byte[]>> getSerializedValue(
+		final Collection<byte[]> serializedKeyAndNamespaces,
+		final TypeSerializer<K> safeKeySerializer,
+		final TypeSerializer<N> safeNamespaceSerializer,
+		final TypeSerializer<V> safeValueSerializer) throws Exception {
+
+		Preconditions.checkNotNull(serializedKeyAndNamespaces);
+		Preconditions.checkNotNull(safeKeySerializer);
+		Preconditions.checkNotNull(safeNamespaceSerializer);
+		Preconditions.checkNotNull(safeValueSerializer);
+
+//		//TODO make KvStateSerializer key-group aware to save this round trip and key-group computation
+//		Tuple2<K, N> keyAndNamespace = KvStateSerializer.deserializeKeyAndNamespace(
+//			serializedKeyAndNamespace, safeKeySerializer, safeNamespaceSerializer);
+//
+//		int keyGroup = KeyGroupRangeAssignment.assignToKeyGroup(keyAndNamespace.f0, backend.getNumberOfKeyGroups());
+//
+//		// we cannot reuse the keySerializationStream member since this method
+//		// is called concurrently to the other ones and it may thus contain garbage
+//		ByteArrayOutputStreamWithPos tmpKeySerializationStream = new ByteArrayOutputStreamWithPos(128);
+//		DataOutputViewStreamWrapper tmpKeySerializationDateDataOutputView = new DataOutputViewStreamWrapper(tmpKeySerializationStream);
+//
+//		writeKeyWithGroupAndNamespace(
+//			keyGroup,
+//			keyAndNamespace.f0,
+//			safeKeySerializer,
+//			keyAndNamespace.f1,
+//			safeNamespaceSerializer,
+//			tmpKeySerializationStream,
+//			tmpKeySerializationDateDataOutputView);
+//
+//		return backend.db.get(columnFamily, tmpKeySerializationStream.toByteArray());
+
+		return null;
+	}
+
+	// ---------------------------------------------------------------------------------
 
 	protected void writeCurrentKeyWithGroupAndNamespace() throws IOException {
 		writeKeyWithGroupAndNamespace(

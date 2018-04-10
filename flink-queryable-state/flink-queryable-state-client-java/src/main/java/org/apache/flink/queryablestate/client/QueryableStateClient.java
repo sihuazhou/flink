@@ -18,6 +18,7 @@
 
 package org.apache.flink.queryablestate.client;
 
+import com.sun.xml.internal.ws.util.CompletedFuture;
 import org.apache.flink.annotation.PublicEvolving;
 import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.api.common.JobID;
@@ -26,6 +27,7 @@ import org.apache.flink.api.common.state.StateDescriptor;
 import org.apache.flink.api.common.typeinfo.TypeHint;
 import org.apache.flink.api.common.typeinfo.TypeInformation;
 import org.apache.flink.api.common.typeutils.TypeSerializer;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.queryablestate.FutureUtils;
 import org.apache.flink.queryablestate.client.state.ImmutableStateBinder;
 import org.apache.flink.queryablestate.client.state.serialization.KvStateSerializer;
@@ -44,7 +46,12 @@ import java.io.IOException;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
+
+import static java.util.concurrent.CompletableFuture.completedFuture;
 
 /**
  * Client for querying Flink's managed state.
@@ -198,6 +205,78 @@ public class QueryableStateClient {
 		return getKvState(jobId, queryableStateName, key, VoidNamespace.INSTANCE,
 				keyTypeInfo, VoidNamespaceTypeInfo.INSTANCE, stateDescriptor);
 	}
+
+	// -----------------------------------------------------------------------------------------------------
+
+	public <K, S extends State, V> CompletableFuture<S> getKvState(
+			final JobID jobId,
+			final String queryableStateName,
+			final Collection<K> keys,
+			final TypeInformation<K> keyTypeInfo,
+			final StateDescriptor<S, V> stateDescriptor) {
+
+		return getKvState(jobId, queryableStateName, keys, VoidNamespace.INSTANCE,
+			keyTypeInfo, VoidNamespaceTypeInfo.INSTANCE, stateDescriptor);
+	}
+
+	private <K, N, S extends State, V> CompletableFuture<S> getKvState(
+		final JobID jobId,
+		final String queryableStateName,
+		final Collection<K> keys,
+		final N namespace,
+		final TypeInformation<K> keyTypeInfo,
+		final TypeInformation<N> namespaceTypeInfo,
+		final StateDescriptor<S, V> stateDescriptor) {
+
+		Preconditions.checkNotNull(jobId);
+		Preconditions.checkNotNull(queryableStateName);
+		Preconditions.checkNotNull(keys);
+		Preconditions.checkNotNull(namespace);
+
+		Preconditions.checkNotNull(keyTypeInfo);
+		Preconditions.checkNotNull(namespaceTypeInfo);
+		Preconditions.checkNotNull(stateDescriptor);
+
+		TypeSerializer<K> keySerializer = keyTypeInfo.createSerializer(executionConfig);
+		TypeSerializer<N> namespaceSerializer = namespaceTypeInfo.createSerializer(executionConfig);
+
+		final List<Tuple2<Integer, byte[]>> serializedKeyAndNamespaces = new ArrayList<>(keys.size());
+		try {
+			for (K key : keys) {
+				byte[] serializedKeyAndNamespace = KvStateSerializer
+					.serializeKeyAndNamespace(key, keySerializer, namespace, namespaceSerializer);
+				serializedKeyAndNamespaces.add(new Tuple2<>(key.hashCode(), serializedKeyAndNamespace));
+			}
+		} catch (IOException e) {
+			return FutureUtils.getFailedFuture(e);
+		}
+
+		return getKvState(jobId, queryableStateName, serializedKeyAndNamespaces).thenApply(
+			stateResponse -> {
+				try {
+					return stateDescriptor.bind(new ImmutableStateBinder(stateResponse.getContent()));
+				} catch (Exception e) {
+					throw new FlinkRuntimeException(e);
+				}
+			});
+	}
+
+	private CompletableFuture<KvStateResponse> getKvState(
+		final JobID jobId,
+		final String queryableStateName,
+		final Collection<Tuple2<Integer, byte[]>> serializedKeyAndNamespaces) {
+		LOG.debug("Sending State Request to {}.", remoteAddress);
+
+		try {
+			KvStateRequest request = new KvStateRequest(jobId, queryableStateName, serializedKeyAndNamespaces);
+			return client.sendRequest(remoteAddress, request);
+		} catch (Exception e) {
+			LOG.error("Unable to send KVStateRequest: ", e);
+			return FutureUtils.getFailedFuture(e);
+		}
+	}
+
+	// -----------------------------------------------------------------------------------------------------
 
 	/**
 	 * Returns a future holding the request result.

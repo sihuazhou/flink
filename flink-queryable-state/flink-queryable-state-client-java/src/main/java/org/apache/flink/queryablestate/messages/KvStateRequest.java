@@ -20,6 +20,7 @@ package org.apache.flink.queryablestate.messages;
 
 import org.apache.flink.annotation.Internal;
 import org.apache.flink.api.common.JobID;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.queryablestate.network.messages.MessageBody;
 import org.apache.flink.queryablestate.network.messages.MessageDeserializer;
 import org.apache.flink.util.Preconditions;
@@ -28,6 +29,7 @@ import org.apache.flink.shaded.netty4.io.netty.buffer.ByteBuf;
 
 import java.nio.ByteBuffer;
 import java.util.Arrays;
+import java.util.Collection;
 
 /**
  * The request to be sent by the {@link org.apache.flink.queryablestate.client.QueryableStateClient
@@ -51,6 +53,17 @@ public class KvStateRequest extends MessageBody {
 		this.stateName = Preconditions.checkNotNull(stateName);
 		this.keyHashCode = keyHashCode;
 		this.serializedKeyAndNamespace = Preconditions.checkNotNull(serializedKeyAndNamespace);
+	}
+
+	public KvStateRequest(
+		final JobID jobId,
+		final String stateName,
+		final Collection<Tuple2<Integer, byte[]>> keyHashCodeAndSerializedKeyAndNamespaces) {
+
+		this.jobId = Preconditions.checkNotNull(jobId);
+		this.stateName = Preconditions.checkNotNull(stateName);
+		this.keyHashCode = 0;
+		this.serializedKeyAndNamespace = null;
 	}
 
 	public JobID getJobId() {
@@ -100,6 +113,10 @@ public class KvStateRequest extends MessageBody {
 				", keyHashCode=" + keyHashCode +
 				", serializedKeyAndNamespace=" + Arrays.toString(serializedKeyAndNamespace) +
 				'}';
+	}
+
+	public Collection<Tuple2<Integer,byte[]>> getRequestKeysInfo() {
+		return null;
 	}
 
 	/**

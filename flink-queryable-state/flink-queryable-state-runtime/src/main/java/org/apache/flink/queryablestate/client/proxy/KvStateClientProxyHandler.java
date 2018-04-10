@@ -50,10 +50,15 @@ import org.slf4j.LoggerFactory;
 
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 
 /**
  * This handler acts as an internal (to the Flink cluster) client that receives
@@ -154,6 +159,47 @@ public class KvStateClientProxyHandler extends AbstractServerHandler<KvStateRequ
 					(t, throwable) -> operationFuture.cancel(false));
 		}
 	}
+
+	// ----------------------------------------------------------------------------------------------
+
+	private CompletableFuture<KvStateResponse> getState(final KvStateRequest request) {
+
+		return getKvStateLookupInfo(request.getJobId(), request.getStateName(), true).thenComposeAsync(
+			(Function<KvStateLocation, CompletableFuture<KvStateResponse>>) location -> {
+				Collection<Tuple2<Integer, byte[]>> keysInfo = request.getRequestKeysInfo();
+
+				Map<Integer, List<Tuple2<Integer, byte[]>>> partitionedKeyInfo = keysInfo.stream().map((Tuple2<Integer, byte[]> keyInfo) -> {
+					final int keyGroupIndex = KeyGroupRangeAssignment.computeKeyGroupForKeyHash(
+						keyInfo.f0, location.getNumKeyGroups());
+					return new Tuple2<Integer, byte[]>(keyGroupIndex, keyInfo.f1);
+				}).collect(Collectors.groupingBy(keyInfo -> keyInfo.f0));
+
+				List<CompletableFuture<?>> completableFutures = new ArrayList<>(partitionedKeyInfo.size());
+
+				for (Map.Entry<Integer, List<Tuple2<Integer, byte[]>>> entry : partitionedKeyInfo.entrySet()) {
+
+					int keyGroupIndex = entry.getKey();
+
+					final InetSocketAddress serverAddress = location.getKvStateServerAddress(keyGroupIndex);
+
+					if (serverAddress == null) {
+						return FutureUtils.completedExceptionally(new UnknownKvStateKeyGroupLocationException(getServerName()));
+					} else {
+						// Query server
+						final KvStateID kvStateId = location.getKvStateID(keyGroupIndex);
+						final KvStateInternalRequest internalRequest = new KvStateInternalRequest(
+							kvStateId, entry.getValue().stream().map(tuple -> tuple.f1).collect(Collectors.toList()));
+						completableFutures.add(kvStateClient.sendRequest(serverAddress, internalRequest));
+					}
+				}
+
+				FutureUtils.waitForAll(completableFutures);
+
+				return null;
+			}, queryExecutor);
+	}
+
+	// ----------------------------------------------------------------------------------------------
 
 	private CompletableFuture<KvStateResponse> getState(
 			final KvStateRequest request,

@@ -27,6 +27,7 @@ import org.apache.flink.util.Preconditions;
 import org.apache.flink.shaded.netty4.io.netty.buffer.ByteBuf;
 
 import java.nio.ByteBuffer;
+import java.util.Collection;
 
 /**
  * The request to be forwarded by the {@link org.apache.flink.runtime.query.KvStateClientProxy
@@ -45,6 +46,14 @@ public class KvStateInternalRequest extends MessageBody {
 
 		this.kvStateId = Preconditions.checkNotNull(stateId);
 		this.serializedKeyAndNamespace = Preconditions.checkNotNull(serializedKeyAndNamespace);
+	}
+
+	public KvStateInternalRequest(
+		final KvStateID stateId,
+		final Collection<byte[]> serializedKeyAndNamespaces) {
+
+		this.kvStateId = Preconditions.checkNotNull(stateId);
+		this.serializedKeyAndNamespace = null;
 	}
 
 	public KvStateID getKvStateId() {
