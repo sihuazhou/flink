@@ -23,6 +23,7 @@ import org.apache.flink.api.common.typeutils.TypeSerializer;
 import org.apache.flink.api.java.tuple.Tuple2;
 
 import java.util.Collection;
+import java.util.Map;
 
 /**
  * The {@code InternalKvState} is the root of the internal state type hierarchy, similar to the
@@ -109,7 +110,7 @@ public interface InternalKvState<K, N, V> extends State {
 			final TypeSerializer<N> safeNamespaceSerializer,
 			final TypeSerializer<V> safeValueSerializer) throws Exception;
 
-	Collection<Tuple2<byte[], byte[]>> getSerializedValue(
+	Map<byte[], byte[]> getSerializedValue(
 		final Collection<byte[]> serializedKeyAndNamespaces,
 		final TypeSerializer<K> safeKeySerializer,
 		final TypeSerializer<N> safeNamespaceSerializer,
