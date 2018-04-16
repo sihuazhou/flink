@@ -48,10 +48,13 @@ import org.apache.flink.shaded.netty4.io.netty.channel.ChannelHandler;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.beans.IntrospectionException;
 import java.net.ConnectException;
 import java.net.InetSocketAddress;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -162,40 +165,102 @@ public class KvStateClientProxyHandler extends AbstractServerHandler<KvStateRequ
 
 	// ----------------------------------------------------------------------------------------------
 
-	private CompletableFuture<KvStateResponse> getState(final KvStateRequest request) {
+	private void executeActionAsync2(
+		final CompletableFuture<KvStateResponse> result,
+		final KvStateRequest request,
+		final boolean update) {
 
-		return getKvStateLookupInfo(request.getJobId(), request.getStateName(), true).thenComposeAsync(
-			(Function<KvStateLocation, CompletableFuture<KvStateResponse>>) location -> {
+		if (!result.isDone()) {
+			final CompletableFuture<Collection<KvStateResponse>> operationFuture = getStateWithMultiKeys(request, update);
+			operationFuture.whenCompleteAsync(
+				(t, throwable) -> {
+					if (throwable != null) {
+						// failed, immediately
+						result.completeExceptionally(throwable);
+					} else {
+						// merging result
+						KvStateResponse mergedResponse = null;
+						for (KvStateResponse response : t) {
+
+						}
+						result.complete(null);
+					}
+				}, queryExecutor);
+
+			result.whenComplete(
+				(t, throwable) -> operationFuture.cancel(false));
+		}
+	}
+
+	private CompletableFuture<Collection<KvStateResponse>> getStateWithMultiKeys(final KvStateRequest request, boolean forceUpdate) {
+
+		return getKvStateLookupInfo(request.getJobId(), request.getStateName(), forceUpdate).thenComposeAsync(
+			(Function<KvStateLocation, CompletableFuture<Collection<KvStateResponse>>>) location -> {
+
+				Collection<CompletableFuture<KvStateResponse>> completableFutures = new ArrayList<>();
+
 				Collection<Tuple2<Integer, byte[]>> keysInfo = request.getRequestKeysInfo();
 
-				Map<Integer, List<Tuple2<Integer, byte[]>>> partitionedKeyInfo = keysInfo.stream().map((Tuple2<Integer, byte[]> keyInfo) -> {
-					final int keyGroupIndex = KeyGroupRangeAssignment.computeKeyGroupForKeyHash(
-						keyInfo.f0, location.getNumKeyGroups());
-					return new Tuple2<Integer, byte[]>(keyGroupIndex, keyInfo.f1);
-				}).collect(Collectors.groupingBy(keyInfo -> keyInfo.f0));
+				Map<InetSocketAddress, Map<KvStateID, List<byte[]>>> bag = new HashMap<>();
 
-				List<CompletableFuture<?>> completableFutures = new ArrayList<>(partitionedKeyInfo.size());
+				Map<InetSocketAddress, Collection<Tuple2<Integer, byte[]>>> subKeysInfo = new HashMap<>();
 
-				for (Map.Entry<Integer, List<Tuple2<Integer, byte[]>>> entry : partitionedKeyInfo.entrySet()) {
+				for (Tuple2<Integer, byte[]> keyInfo : keysInfo) {
 
-					int keyGroupIndex = entry.getKey();
+					int keyGroupIndex = keyInfo.f0;
 
 					final InetSocketAddress serverAddress = location.getKvStateServerAddress(keyGroupIndex);
 
 					if (serverAddress == null) {
 						return FutureUtils.completedExceptionally(new UnknownKvStateKeyGroupLocationException(getServerName()));
 					} else {
-						// Query server
+						Map<KvStateID, List<byte[]>> subBag = bag.putIfAbsent(serverAddress, new HashMap<>());
 						final KvStateID kvStateId = location.getKvStateID(keyGroupIndex);
-						final KvStateInternalRequest internalRequest = new KvStateInternalRequest(
-							kvStateId, entry.getValue().stream().map(tuple -> tuple.f1).collect(Collectors.toList()));
-						completableFutures.add(kvStateClient.sendRequest(serverAddress, internalRequest));
+						subBag.putIfAbsent(kvStateId, new ArrayList<byte[]>()).add(keyInfo.f1);
+						subKeysInfo.putIfAbsent(serverAddress, new ArrayList<>()).add(keyInfo);
 					}
 				}
 
-				FutureUtils.waitForAll(completableFutures);
+				// send request
+				for (Map.Entry<InetSocketAddress, Map<KvStateID, List<byte[]>>> entry : bag.entrySet()) {
 
-				return null;
+					final InetSocketAddress serverAddress = entry.getKey();
+
+					final Map<KvStateID, List<byte[]>> kvStateIDS = entry.getValue();
+
+					// Query server
+					final KvStateInternalRequest internalRequest = new KvStateInternalRequest(kvStateIDS);
+					final CompletableFuture<KvStateResponse> subResponseFuture = new CompletableFuture<>();
+
+					kvStateClient.sendRequest(serverAddress, internalRequest).whenComplete(
+						(r, t) -> {
+							if (t != null) { // failed, retry
+								KvStateRequest subKvStateRequest =
+									new KvStateRequest(
+										request.getJobId(),
+										request.getStateName(),
+										subKeysInfo.get(serverAddress));
+
+								CompletableFuture<Collection<KvStateResponse>> conjunctFuture =
+									getStateWithMultiKeys(subKvStateRequest, true);
+
+								conjunctFuture.whenComplete((pr, pt) -> {
+									if (pt != null) {
+										subResponseFuture.completeExceptionally(pt);
+									} else {
+										// merge the partial result
+										subResponseFuture.complete(null);
+									}
+								});
+							} else {
+								//complete
+								subResponseFuture.complete(r);
+							}
+						});
+					completableFutures.add(subResponseFuture);
+				}
+
+				return FutureUtils.combineAll(completableFutures);
 			}, queryExecutor);
 	}
 

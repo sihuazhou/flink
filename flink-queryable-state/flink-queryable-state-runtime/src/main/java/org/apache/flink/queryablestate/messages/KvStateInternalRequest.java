@@ -19,6 +19,7 @@
 package org.apache.flink.queryablestate.messages;
 
 import org.apache.flink.annotation.Internal;
+import org.apache.flink.api.java.tuple.Tuple2;
 import org.apache.flink.queryablestate.KvStateID;
 import org.apache.flink.queryablestate.network.messages.MessageBody;
 import org.apache.flink.queryablestate.network.messages.MessageDeserializer;
@@ -28,6 +29,8 @@ import org.apache.flink.shaded.netty4.io.netty.buffer.ByteBuf;
 
 import java.nio.ByteBuffer;
 import java.util.Collection;
+import java.util.List;
+import java.util.Map;
 
 /**
  * The request to be forwarded by the {@link org.apache.flink.runtime.query.KvStateClientProxy
@@ -48,11 +51,9 @@ public class KvStateInternalRequest extends MessageBody {
 		this.serializedKeyAndNamespace = Preconditions.checkNotNull(serializedKeyAndNamespace);
 	}
 
-	public KvStateInternalRequest(
-		final KvStateID stateId,
-		final Collection<byte[]> serializedKeyAndNamespaces) {
+	public KvStateInternalRequest(final Map<KvStateID, List<byte[]>> serializedKeyAndNamespaces) {
 
-		this.kvStateId = Preconditions.checkNotNull(stateId);
+		this.kvStateId = null;
 		this.serializedKeyAndNamespace = null;
 	}
 
