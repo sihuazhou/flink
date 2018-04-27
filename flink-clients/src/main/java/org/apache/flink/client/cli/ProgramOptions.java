@@ -22,6 +22,7 @@ import org.apache.flink.api.common.ExecutionConfig;
 import org.apache.flink.runtime.jobgraph.SavepointRestoreSettings;
 
 import org.apache.commons.cli.CommandLine;
+import org.apache.flink.util.Preconditions;
 
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -30,6 +31,7 @@ import java.util.Arrays;
 import java.util.List;
 
 import static org.apache.flink.client.cli.CliFrontendParser.ARGS_OPTION;
+import static org.apache.flink.client.cli.CliFrontendParser.CHECKPOINT_PATH_OPTION;
 import static org.apache.flink.client.cli.CliFrontendParser.CLASSPATH_OPTION;
 import static org.apache.flink.client.cli.CliFrontendParser.CLASS_OPTION;
 import static org.apache.flink.client.cli.CliFrontendParser.DETACHED_OPTION;
@@ -116,10 +118,18 @@ public abstract class ProgramOptions extends CommandLineOptions {
 		detachedMode = line.hasOption(DETACHED_OPTION.getOpt()) || line.hasOption(
 			YARN_DETACHED_OPTION.getOpt());
 
+		Preconditions.checkArgument(
+			!(line.hasOption(SAVEPOINT_PATH_OPTION.getOpt()) && line.hasOption(CHECKPOINT_PATH_OPTION.getOpt())),
+			SAVEPOINT_PATH_OPTION.getOpt() + " and " + CHECKPOINT_PATH_OPTION.getOpt() + " cannot be set at the same time");
+
 		if (line.hasOption(SAVEPOINT_PATH_OPTION.getOpt())) {
 			String savepointPath = line.getOptionValue(SAVEPOINT_PATH_OPTION.getOpt());
 			boolean allowNonRestoredState = line.hasOption(SAVEPOINT_ALLOW_NON_RESTORED_OPTION.getOpt());
 			this.savepointSettings = SavepointRestoreSettings.forPath(savepointPath, allowNonRestoredState);
+		} else if (line.hasOption(CHECKPOINT_PATH_OPTION.getOpt())) {
+			String externalizedPath = line.getOptionValue(CHECKPOINT_PATH_OPTION.getOpt());
+			boolean allowNonRestoredState = line.hasOption(SAVEPOINT_ALLOW_NON_RESTORED_OPTION.getOpt());
+			this.savepointSettings = SavepointRestoreSettings.forExternalizedPath(externalizedPath, allowNonRestoredState);
 		} else {
 			this.savepointSettings = SavepointRestoreSettings.none();
 		}

@@ -18,6 +18,13 @@
 
 package org.apache.flink.runtime.jobgraph;
 
+import org.apache.flink.annotation.VisibleForTesting;
+import org.apache.flink.core.fs.FileStatus;
+import org.apache.flink.core.fs.FileSystem;
+import org.apache.flink.core.fs.Path;
+import org.apache.flink.util.FlinkRuntimeException;
+
+import java.io.IOException;
 import java.io.Serializable;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -27,16 +34,20 @@ import static org.apache.flink.util.Preconditions.checkNotNull;
  */
 public class SavepointRestoreSettings implements Serializable {
 
+	public enum RestoreType {FROM_SAVEPOINT, FROM_EXTERNALIZED_CHECKPOINT}
+
 	private static final long serialVersionUID = 87377506900849777L;
 
 	/** No restore should happen. */
-	private final static SavepointRestoreSettings NONE = new SavepointRestoreSettings(null, false);
+	private final static SavepointRestoreSettings NONE = new SavepointRestoreSettings(null, false, null);
 
 	/** By default, be strict when restoring from a savepoint.  */
 	private final static boolean DEFAULT_ALLOW_NON_RESTORED_STATE = false;
 
 	/** Savepoint restore path. */
 	private final String restorePath;
+
+	private final RestoreType restoreType;
 
 	/**
 	 * Flag indicating whether non restored state is allowed if the savepoint
@@ -50,9 +61,10 @@ public class SavepointRestoreSettings implements Serializable {
 	 * @param restorePath Savepoint restore path.
 	 * @param allowNonRestoredState Ignore unmapped state.
 	 */
-	private SavepointRestoreSettings(String restorePath, boolean allowNonRestoredState) {
+	private SavepointRestoreSettings(String restorePath, boolean allowNonRestoredState, RestoreType restoreType) {
 		this.restorePath = restorePath;
 		this.allowNonRestoredState = allowNonRestoredState;
+		this.restoreType = restoreType;
 	}
 
 	/**
@@ -63,13 +75,21 @@ public class SavepointRestoreSettings implements Serializable {
 		return restorePath != null;
 	}
 
+	public RestoreType getRestoreType() {
+		return restoreType;
+	}
+
 	/**
 	 * Returns the path to the savepoint to restore from.
 	 * @return Path to the savepoint to restore from or <code>null</code> if
 	 * should not restore.
 	 */
 	public String getRestorePath() {
-		return restorePath;
+		if (restoreType == RestoreType.FROM_SAVEPOINT) {
+			return restorePath;
+		} else {
+			return getTheLastSuccessfulCheckpointPath(restorePath);
+		}
 	}
 
 	/**
@@ -124,7 +144,35 @@ public class SavepointRestoreSettings implements Serializable {
 
 	public static SavepointRestoreSettings forPath(String savepointPath, boolean allowNonRestoredState) {
 		checkNotNull(savepointPath, "Savepoint restore path.");
-		return new SavepointRestoreSettings(savepointPath, allowNonRestoredState);
+		return new SavepointRestoreSettings(savepointPath, allowNonRestoredState, RestoreType.FROM_SAVEPOINT);
 	}
 
+	public static SavepointRestoreSettings forExternalizedPath(String externalizedPath, boolean allowNonRestoredState) {
+		checkNotNull(externalizedPath, "Externalized path is null.");
+		return new SavepointRestoreSettings(externalizedPath, allowNonRestoredState, RestoreType.FROM_EXTERNALIZED_CHECKPOINT);
+	}
+
+	private static String getTheLastSuccessfulCheckpointPath(String externalizedPath) {
+		Path path = new Path(externalizedPath);
+		try {
+			FileSystem fileSystem = path.getFileSystem();
+			FileStatus[] subDirs = fileSystem.listStatus(path);
+
+			int lastCheckpointID = -1;
+			String lastCheckpointPath = null;
+
+			for (FileStatus fileStatus : subDirs) {
+				String subPath = fileStatus.getPath().getName();
+				int currentCheckpointID = -1;
+				if (lastCheckpointID < currentCheckpointID) {
+					lastCheckpointID = currentCheckpointID;
+					lastCheckpointPath = subPath;
+				}
+			}
+
+			return lastCheckpointPath;
+		} catch (IOException e) {
+			throw new FlinkRuntimeException("Failed to get the last successful checkpoint from path " + externalizedPath, e);
+		}
+	}
 }

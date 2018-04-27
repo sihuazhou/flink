@@ -96,6 +96,26 @@ public class CliFrontendRunTest extends CliFrontendTestBase {
 			assertTrue(savepointSettings.allowNonRestoredState());
 		}
 
+		// test configure externalized path (no ignore flag)
+		{
+			String[] parameters = {"-s", "expectedExternalizedPath", getTestJarPath()};
+			RunOptions options = CliFrontendParser.parseRunCommand(parameters);
+			SavepointRestoreSettings savepointSettings = options.getSavepointRestoreSettings();
+			assertTrue(savepointSettings.restoreSavepoint());
+			assertEquals("expectedExternalizedPath", savepointSettings.getRestorePath());
+			assertFalse(savepointSettings.allowNonRestoredState());
+		}
+
+		// test configure externalized path (with ignore flag)
+		{
+			String[] parameters = {"-s", "expectedExternalizedPath", "-n", getTestJarPath()};
+			RunOptions options = CliFrontendParser.parseRunCommand(parameters);
+			SavepointRestoreSettings savepointSettings = options.getSavepointRestoreSettings();
+			assertTrue(savepointSettings.restoreSavepoint());
+			assertEquals("expectedExternalizedPath", savepointSettings.getRestorePath());
+			assertTrue(savepointSettings.allowNonRestoredState());
+		}
+
 		// test jar arguments
 		{
 			String[] parameters =
